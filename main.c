@@ -1,0 +1,1103 @@
+/*
+ * main.c
+ *
+ *  Created on: 20 dic. 2024
+ *      Author: JCaf
+ *      Atmega328P @20MHz
+ *
+ *Comprobar USART online
+ *https://wormfood.net/avrbaudcalc.php?bitrate=19.2k&clock=20&databits=8
+ *
+ *serial port Terminal: realTerm
+ *Terminal serial port at 230400 bauds:
+ *https://sourceforge.net/projects/realterm/
+ *
+ *Encoder
+ *http://makeatronics.blogspot.com/2013/02/efficiently-reading-quadrature-with.html
+
+CH340 DATASHEET
+https://www.mpja.com/download/35227cpdata.pdf
+
+ Github new password> generar nuevo token
+ https://stackoverflow.com/questions/46153433/eclipse-git-egit-not-accepting-remote-username-and-password
+
+token dic2025 GitHub
+https://github.com/jcaf/SistemaDieJunio2026.git
+
+
+
+ * ----------------------------------------
+ 1)  http://www.engbedded.com/fusecalc/
+ 	 lock bits:
+ 	 http://eleccelerator.com/fusecalc/fusecalc.php?chip=atmega328p
+
+ 2) verificar que responda el atmega (ONLY A RESET)
+ [jcaf@jcafpc ~]$ avrdude -c usbasp -B5 -v -p m328P
+
+ 3) programar fuse (sin preservar EEPROM)
+
+ [jcaf@jcafpc ~]$ avrdude -c usbasp -B5 -p m328P -U lfuse:w:0xff:m -U hfuse:w:0xd9:m -U efuse:w:0xff:m
+
+ 4) GRABAR EL CODIGO FUENTE CON EL COMANDO ACOSTUMBRADO
+ [root@JCAFPC Release]# avrdude -c usbasp -B5 -p m328P -U flash:w:SistemaDieJunio2026.X.production.hex
+
+ NUEVO
+ [root@JCAFPC Release]# avrdude -c usbasp -B0.3 -p m328P -V -U flash:w:SistemaDieJunio2026.X.production.hex (MAS RAPIDO!)
+ Tambien puede ser sin -BX.. cuando ya esta bien configurado los fuses:
+ [root@JCAFPC Release]# avrdude -c usbasp -p m328P -U flash:w:SistemaDieJunio2026.X.production.hex
+
+ 5) GRABAR LA EEPROM
+ [jcaf@jcafpc Release]$ avrdude -c usbasp -B4 -p m328P -V -U eeprom:w:SistemaDieJunio2026.X.production.eep
+
+ 6) programar fuse (PRESERVANDO EEPROM)
+
+		avrdude -c usbasp -B5 -p m328P -U lfuse:w:0xff:m -U hfuse:w:0xd1:m -U efuse:w:0xff:m
+
+ 7) Verificar los fuses
+ [jcaf@jcafpc Release]$ avrdude -c usbasp -B4 -p m328P -U lfuse:r:-:i -v
+
+ +++++++++++++++++++++++
+ proteger flash (modo 3): lectura y escritura
+ avrdude -c usbasp -B10 -p m328P -U lock:w:0xFC:m
+
+BitRate UART
+19.2k @ 20MHz
+
+https://wormfood.net/avrbaudcalc.php?postbitrate=9600&postclock=1
+
+
+ https://floating-point-gui.de/errors/comparison/
+ */
+
+#include "system.h"
+#include "main.h"
+#include "rx_trama/rx_trama.h"
+#include "pinGetLevel/pinGetLevel.h"
+#include "indicator/indicator.h"
+#include "usart/usart.h"
+#include "serial/serial.h"
+#include <avr/eeprom.h>
+#include <math.h>
+#include <util/atomic.h>
+
+volatile int32_t intervalo_actual_copy_from_ISR;
+volatile int32_t enc_count_copy_from_ISR;
+volatile int32_t ultimo_bloque_procesado;
+volatile int32_t pulsos_por_intervalo;
+// Almacena el número de bloque entero (ej: 0, 1, 2, 3) que ya fue procesado
+//volatile int32_t ultimo_bloque_procesado = 0; 
+
+volatile uint8_t transmitiendo_intervalo = 0;
+//volatile  int64_t enc_count = 0;
+volatile  int32_t enc_count = 0;
+//
+
+float recorrido_total;// = 100;
+volatile float recorrido_actual;
+//volatile float recorrido_1vuelta;
+volatile float intervalo;
+int selector;
+int execution;
+int motor;
+int led_enlace;
+uint16_t encoder_PPR;
+float longitudArcoPorResolucion;
+//volatile int num_vuelta=0;
+
+//uint16_t EEMEM EEMEM_encoder_PPR=0;
+//float EEMEM EEMEM_longitudArcoPorResolucion=0;
+//bug fixed: 16/09/2025
+uint16_t EEMEM EEMEM_encoder_PPR=500;
+float EEMEM EEMEM_longitudArcoPorResolucion=1000.0f;//inicialmente un valor para que al probar nos de un valor y no un "NAN"
+
+
+volatile struct _isr_flag
+{
+	unsigned sysTickMs :1;
+	unsigned send_recorrido_actual :1;
+	unsigned __a :6;
+} isr_flag = { 0 };
+
+volatile struct _mainflag mainflag;
+
+volatile static uint8_t enc_val = 0;
+volatile uint8_t old_PORTRxENC_CHB;//track last change in quadrature
+//
+volatile float ENCODER_KRESOL; //es la kte. de div. Longiotud de Arco entre PPR*4
+
+void set_execution(int execution)
+{
+	if (execution == INICIO)
+	{
+		motor = MOTOR_ON;
+		set_motor(motor);
+		set_led_motor(motor);
+		//mainflag.control_recorrido = 1;//Ahora el control se activa desde que se presiona el boton ACEPTAR en el software.
+
+		mainflag.usb_send_execution = 1;
+	}
+	else if (execution == PAUSA)
+	{
+		motor = MOTOR_OFF;
+		set_motor(motor);//espera a la orden de inicio
+		set_led_motor(motor);
+		//mainflag.control_recorrido = 0;
+		//mainflag.usb_send_motor = 1;
+
+		mainflag.usb_send_execution = 1;
+	}
+	else if (execution == PARAR)
+	{
+		motor = MOTOR_OFF;
+		set_motor(motor);//espera a la orden de inicio
+		set_led_motor(motor);
+		mainflag.control_recorrido = 0;
+		//mainflag.usb_send_motor = 1;
+
+		mainflag.usb_send_execution = 1;
+	}
+	else if (execution == RESET)
+	{
+		//
+		cli();
+
+		//num_vuelta = 0;
+		enc_count = 0;
+                enc_count_copy_from_ISR = 0;
+                intervalo_actual_copy_from_ISR = 0;    //added
+                
+		recorrido_actual = enc_count*ENCODER_KRESOL;
+
+                //ultimo_bloque_procesado = 0;
+                 // Forzamos un valor absurdo para obligar al ISR a calcular la posición real 
+                // en su primerísima interrupción, sin importar si va a positivos o negativos.
+                ultimo_bloque_procesado = -999; 
+                
+		USB_send_data_float(USB_DATACODE_SET_RECORRIDO_ACTUAL, recorrido_actual);
+
+		mainflag.usb_send_execution = 1;
+		sei();
+	}
+}
+
+void set_led_enlace(int led_enlace)
+{
+	if (led_enlace == 1)
+	{
+		PinTo1(PORTWxLED_ENLACE,PINxLED_ENLACE);
+	}
+	else
+	{
+		PinTo0(PORTWxLED_ENLACE,PINxLED_ENLACE);
+	}
+}
+
+void set_led_motor(int led_motor)
+{
+	if (led_motor == 1)
+	{
+		PinTo1(PORTWxLED_MOTOR_ACTIVADO,PINxLED_MOTOR_ACTIVADO);
+	}
+	else
+	{
+		PinTo0(PORTWxLED_MOTOR_ACTIVADO,PINxLED_MOTOR_ACTIVADO);
+	}
+}
+void set_motor(int motor)
+{
+	if (motor == 1)
+	{
+		PinTo1(PORTWxRELAY_MOTOR_GIRO,PINxRELAY_MOTOR_GIRO);
+	}
+	else
+	{
+		PinTo0(PORTWxRELAY_MOTOR_GIRO,PINxRELAY_MOTOR_GIRO);
+	}
+
+}
+void set_ledselector(int selector)
+{
+	if (selector == SELECTOR_SP)
+	{
+		PinTo1(PORTWxLED1,PINxLED1);
+		PinTo0(PORTWxLED2,PINxLED2);
+		PinTo0(PORTWxLED3,PINxLED3);
+		PinTo0(PORTWxLED4,PINxLED4);
+	}
+	else if (selector == SELECTOR_NC)
+	{
+		PinTo0(PORTWxLED1,PINxLED1);
+		PinTo1(PORTWxLED2,PINxLED2);
+		PinTo0(PORTWxLED3,PINxLED3);
+		PinTo0(PORTWxLED4,PINxLED4);
+	}
+	else if (selector == SELECTOR_NL)
+	{
+		PinTo0(PORTWxLED1,PINxLED1);
+		PinTo0(PORTWxLED2,PINxLED2);
+		PinTo1(PORTWxLED3,PINxLED3);
+		PinTo0(PORTWxLED4,PINxLED4);
+	}
+	else if (selector == SELECTOR_L)
+	{
+		PinTo0(PORTWxLED1,PINxLED1);
+		PinTo0(PORTWxLED2,PINxLED2);
+		PinTo0(PORTWxLED3,PINxLED3);
+		PinTo1(PORTWxLED4,PINxLED4);
+	}
+
+}
+/*
+ * modificado el 01/06/2026 para la nueva tarjeta del 2026
+ */
+void set_selector(int selector)
+{
+	if (selector == SELECTOR_SP)
+	{
+		//RLY2
+		PinTo0(PORTWxRELAY1,PINxRELAY1);//1
+		PinTo1(PORTWxRELAY2,PINxRELAY2);//2
+		PinTo0(PORTWxRELAY3,PINxRELAY3);//4
+		PinTo0(PORTWxRELAY4,PINxRELAY4);//3
+	}
+	else if (selector == SELECTOR_NC)
+	{
+		//RLY1 - RLY2
+		PinTo1(PORTWxRELAY1,PINxRELAY1);//1
+		PinTo1(PORTWxRELAY2,PINxRELAY2);//2
+		PinTo0(PORTWxRELAY3,PINxRELAY3);//4
+		PinTo0(PORTWxRELAY4,PINxRELAY4);//3
+	}
+	else if (selector == SELECTOR_NL)
+	{
+		//RLY1 - RLY3
+		PinTo1(PORTWxRELAY1,PINxRELAY1);//1
+		PinTo1(PORTWxRELAY2,PINxRELAY2);//2
+		PinTo0(PORTWxRELAY3,PINxRELAY3);//4
+		PinTo1(PORTWxRELAY4,PINxRELAY4);//3
+	}
+	else if (selector == SELECTOR_L)
+	{
+		//RLY1 - RLY4
+		PinTo1(PORTWxRELAY1,PINxRELAY1);//1
+		PinTo0(PORTWxRELAY2,PINxRELAY2);//2
+		PinTo1(PORTWxRELAY3,PINxRELAY3);//4
+		PinTo0(PORTWxRELAY4,PINxRELAY4);//3
+	}
+}
+
+
+void USB_send_data_float(char datacode, float payload0)
+{
+	char str[30];
+	char buff[30];
+
+	str[0] = USB_DATACODE_TOKEN_BEGIN;
+	str[1] = datacode;
+	str[2] = '\0';
+	dtostrf(payload0, 0, 2, buff);
+	strcat(str,buff);
+	strcat(str,"\r");
+	//
+	usart_print_string(str);
+}
+
+void USB_send_data_integer(char datacode, int payload0)
+{
+	char str[30];
+	char buff[30];
+
+	str[0] = USB_DATACODE_TOKEN_BEGIN;
+	str[1] = datacode;
+	str[2] = '\0';
+	itoa(payload0, buff, 10);
+	strcat(str,buff);
+
+	strcat(str,"\r");
+	//strcat(str,"\n");
+
+	//usart_println_string(str);
+	usart_print_string(str);
+}
+//int8_t AreSame(float a, float b)
+//{
+//	if ( (fabs(a-b)) < 0.005)
+//		return 1;
+//  return 0;
+//}
+
+int main(void)
+{
+	int counter0=0;
+	char buff[10];
+
+	//Activar pullups en las entradas
+	pinGetLevel_init(); //with Changed=flag activated at initialization
+
+	ConfigOutputPin(CONFIGIOxRELAY1, PINxRELAY1);
+	ConfigOutputPin(CONFIGIOxRELAY2, PINxRELAY2);
+	ConfigOutputPin(CONFIGIOxRELAY3, PINxRELAY3);
+	ConfigOutputPin(CONFIGIOxRELAY4, PINxRELAY4);
+
+	ConfigOutputPin(CONFIGIOxLED_MOTOR_ACTIVADO, PINxLED_MOTOR_ACTIVADO);
+	ConfigOutputPin(CONFIGIOxLED_ENLACE, PINxLED_ENLACE);
+	ConfigOutputPin(CONFIGIOxLED1, PINxLED1);
+	ConfigOutputPin(CONFIGIOxLED2, PINxLED2);
+	ConfigOutputPin(CONFIGIOxLED3, PINxLED3);
+	ConfigOutputPin(CONFIGIOxLED4, PINxLED4);
+
+	ConfigOutputPin(CONFIGIOxRELAY_MOTOR_GIRO, PINxRELAY_MOTOR_GIRO);
+
+	ConfigOutputPin(CONFIGIOxBUZZER, PINxBUZZER);
+	indicator_setPortPin(&PORTWxBUZZER, PINxBUZZER);
+//	indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
+	indicatorTimed_setKSysTickTime_ms(1500/SYSTICK_MS);
+	indicatorTimed_run();
+
+	ConfigInputPin(CONFIGIOxENC_CHA, PINxENC_CHA);
+	ConfigInputPin(CONFIGIOxENC_CHB, PINxENC_CHB);
+
+	longitudArcoPorResolucion = eeprom_read_float( &EEMEM_longitudArcoPorResolucion);//longitud de arco se almacena en milimetros
+	encoder_PPR = eeprom_read_word(&EEMEM_encoder_PPR);//
+	ENCODER_KRESOL = (longitudArcoPorResolucion/1000.0f)/(encoder_PPR * ENCODE_QUADRATURE);//una kte en metros/(PPR*4)
+
+        
+
+	//With prescaler 64, gets 1 ms exact (OCR0=249) @16mhz
+	//With prescaler 256, gets 1 ms no-exact (OCR0=77) @20mhz
+	//Config to 1ms
+	TCNT0 = 0x00;
+	TCCR0A = (1 << WGM01);
+	TCCR0B =  (1 << CS02) | (0 << CS01) | (0 << CS00); //CTC, PRES=256
+	OCR0A = CTC_SET_OCR_BYTIME(1e-3, 256);// 77.125
+	//
+	TIMSK0 |= (1 << OCIE0A);
+	//sei();
+
+	//USART_Init ( 64);//38400 baudios
+//	USART_Init ( (int)MYUBRR);
+//	USART_Init ( 10); //@230400
+
+	USART_Init ( 4); //@250000 @20mhz + DoubleSpeed U2X0 = 0
+//	USART_Init (129); //@250000 @20mhz + DoubleSpeed U2X0 = 0
+
+//	while (1)
+//	{	usart_print_string("38400");
+//		__delay_ms(1000);
+//	}
+	//Encoder setup Atmega328P, external Pull-ups 1K
+	//channel A = PD2 INT0 / PCINT18
+	//channel B = PD3 INT1 / PCINT19
+	PCICR 	= 0x04;//PCIE2 PCINT[23:16] Any change on any enabled PCINT[23:16] pin will cause an interrupt.
+	PCMSK2 	= 0x0C;//PCINT18 PCINT19
+	//old_PORTRxENC_CHB = PORTRxENC_CHB;
+
+	enc_val = ((PIND & 0b00001100) >> 2);
+	sei();
+
+	USB_send_data_integer(USB_DATACODE_RESET_BOARD, MCUSR);
+
+
+	while (1)
+	{
+		if (isr_flag.sysTickMs)
+		{
+			isr_flag.sysTickMs = 0;
+			mainflag.sysTickMs = 1;
+		}
+
+		if (mainflag.sysTickMs)
+		{
+			if (++counter0 == (20/SYSTICK_MS))    //20ms
+			{
+				counter0 = 0;
+
+				pinGetLevel_job();
+				//UP
+				if (pinGetLevel_hasChanged(PGLEVEL_LYOUT_KEY_P1UP))
+				{
+					pinGetLevel_clearChange(PGLEVEL_LYOUT_KEY_P1UP);
+					//
+					if (mainflag.control_recorrido == 0)
+					{
+						if (pinGetLevel_level(PGLEVEL_LYOUT_KEY_P1UP)== 0)	//active in low
+						{
+							if (++selector > SELECTOR_L)
+							{
+								selector = SELECTOR_SP;
+							}
+							set_selector(selector);
+							set_ledselector(selector);
+
+							//Se ha deshabilitado en el software el radio button "L"
+							// por eso por seguridad deja sin efecto sÃ³lo en el envio, pero la sÃ¡lida de rele y leds sÃ­ se activan
+							//USB_send_data_integer(USB_DATACODE_SET_SELECTOR, selector);
+							if (selector != SELECTOR_L)
+							{
+								USB_send_data_integer(USB_DATACODE_SET_SELECTOR, selector);
+							}
+
+
+							//
+							indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
+							indicatorTimed_run();
+
+						}
+					}
+				}
+				//DOWN
+				if (pinGetLevel_hasChanged(PGLEVEL_LYOUT_KEY_P2DOWN))
+				{
+					pinGetLevel_clearChange(PGLEVEL_LYOUT_KEY_P2DOWN);
+					//
+					if (mainflag.control_recorrido == 0)
+					{
+
+						if (pinGetLevel_level(PGLEVEL_LYOUT_KEY_P2DOWN)== 0)	//active in low
+						{
+							if (--selector < SELECTOR_SP)
+							{
+								selector = SELECTOR_L;
+							}
+							set_selector(selector);
+							set_ledselector(selector);
+							//
+							//USB_send_data_integer(USB_DATACODE_SET_SELECTOR, selector);
+							if (selector != SELECTOR_L)
+							{
+								USB_send_data_integer(USB_DATACODE_SET_SELECTOR, selector);
+							}
+
+
+							//
+							indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
+							indicatorTimed_run();
+						}
+					}
+				}
+
+			}
+		}
+
+
+		//Send data to Host PC
+		if (mainflag.usb_send_selector)
+		{
+			USB_send_data_integer(USB_DATACODE_SET_SELECTOR, selector);
+			mainflag.usb_send_selector =0;
+		}
+		if (mainflag.usb_send_execution)
+		{
+			USB_send_data_integer(USB_DATACODE_SET_EXECUTION, execution);
+			mainflag.usb_send_execution = 0;
+		}
+		if (mainflag.usb_send_motor)
+		{
+			USB_send_data_integer(USB_DATACODE_SET_MOTOR, motor);
+			mainflag.usb_send_motor = 0;
+		}
+		if (mainflag.usb_send_led_enlace)
+		{
+			USB_send_data_integer(USB_DATACODE_SET_LED_ENLACE, led_enlace);
+			mainflag.usb_send_led_enlace = 0;
+		}
+
+                int32_t enc_count_copia = 0;    
+                int32_t intervalo_actual_copia = 0;
+                int8_t es_intervalo_completo=0;
+		////////////////////////////////////////////////////////////////////////
+                //1ero se calcula el recorrido actual y despues se envia el USB_DATACODE_INTERVALO_COMPLETO
+		/*
+                if (isr_flag.send_recorrido_actual)
+		{
+			//recorrido_actual = enc_count*ENCODER_KRESOL; //bug
+                        
+                        
+                        ATOMIC_BLOCK(ATOMIC_FORCEON)
+                        {
+                            enc_count_copia = enc_count_copy_from_ISR;
+                            intervalo_actual_copia = intervalo_actual_copy_from_ISR;
+                            //
+                        }
+                        
+                        if (mainflag.usb_send_intervalo_completo == 0)
+                        {
+                            recorrido_actual = (float) enc_count_copia * ENCODER_KRESOL;
+                        }
+                        else
+                        {
+                            // CORRECCIÓN MATEMÁTICA: Forzamos el valor flotante teórico exacto
+                            // Ej: Si intervalo_actual es 9 e intervalo es 1.00f, dará 9.00f exacto.
+
+                            recorrido_actual = (float) intervalo_actual_copia * intervalo;
+                        }
+                              
+                        
+			USB_send_data_float(USB_DATACODE_SET_RECORRIDO_ACTUAL, recorrido_actual);
+			isr_flag.send_recorrido_actual = 0;
+			//
+		}
+		if (mainflag.usb_send_intervalo_completo)
+		{
+			USB_send_data_integer(USB_DATACODE_INTERVALO_COMPLETO, 0);
+			mainflag.usb_send_intervalo_completo = 0;
+
+			//
+			indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
+			indicatorTimed_run();
+			//
+		}
+                */
+                if (isr_flag.send_recorrido_actual)
+                {
+                    ATOMIC_BLOCK(ATOMIC_FORCEON)
+                    {
+                        enc_count_copia = enc_count_copy_from_ISR;
+                        intervalo_actual_copia = intervalo_actual_copy_from_ISR;
+                        es_intervalo_completo = mainflag.usb_send_intervalo_completo; 
+
+                        if(es_intervalo_completo) 
+                        {
+                            mainflag.usb_send_intervalo_completo = 0;
+                        }
+
+                        // OPTIMIZACIÓN: Limpiamos la bandera aquí dentro para que sea una operación atómica
+                        isr_flag.send_recorrido_actual = 0; 
+                    }
+
+                    if (es_intervalo_completo == 0)
+                    {
+                        // Telemetría normal continua en paz
+                        recorrido_actual = (float) enc_count_copia * ENCODER_KRESOL;
+                        USB_send_data_float(USB_DATACODE_SET_RECORRIDO_ACTUAL, recorrido_actual);
+                    }
+                    else 
+                    {
+                        // ¡Llegamos al intervalo! Activamos el escudo protector
+                        transmitiendo_intervalo = 1;
+                        
+                        recorrido_actual = (float) intervalo_actual_copia * intervalo;
+
+                        
+                        // Transmitimos ambos comandos consecutivamente. 
+                        // El ISR interrumpirá el bucle 'while' de la UART para contar pulsos (no pierdes pasos), 
+                        // pero no ejecutará multiplicaciones float ni pisará variables. 
+                        // Los bytes saldrán limpios uno detrás del otro por UDR0.
+
+                        USB_send_data_float(USB_DATACODE_SET_RECORRIDO_ACTUAL, recorrido_actual);
+                        USB_send_data_integer(USB_DATACODE_INTERVALO_COMPLETO, 0);
+
+                        // Liberamos el escudo
+                        transmitiendo_intervalo = 0;
+
+                        indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
+                        indicatorTimed_run();
+                    }
+                    // Línea eliminada de aquí afuera para evitar la carrera de firmware
+                }
+
+		//++
+		rx_trama();
+		indicatorTimed_job();
+		mainflag.sysTickMs = 0;
+	}
+	return 0;
+}
+
+ISR(TIMER0_COMPA_vect)
+{
+	isr_flag.sysTickMs = 1;
+}
+
+//void encoder_reset(void)
+//{
+//	//
+//	PCICR 	= 0x00;//disable PCIE2 PCINT[23:16]
+//	//encoder.rotaryCount = 0x0000;
+//	encoder = encoderReset;//clear struct
+//	old_PORTRxENC_CHB = PORTRxENC_CHB;
+////	isr_flag.send_posicion = 1;
+//
+//	PCIFR 	= 0x04;//PCINT18 PCINT19 clear flags
+//	PCICR 	= 0x04;//PCIE2 PCINT[23:16] Any change on any enabled PCINT[23:16] pin will cause an interrupt.
+//
+//Este ISR es por cambio de nivel
+
+/*
+ * Condición Izquierda: marca_detectada != intervalo_actual_copy_from_ISRQué hace: Verifica si la marca numérica que el encoder acaba de tocar es una marca totalmente nueva para el sistema (por ejemplo, pasar de la marca 6 a la marca 7).Para qué sirve: Es el filtro principal cuando el motor avanza en línea recta. Mientras vayas hacia adelante descubriendo nuevos intervalos (1, 2, 3, 4...), esta condición siempre dará Verdadero y permitirá guardar el dato y avisar a la PC.Condición Derecha: direccion_actual != ultima_direccionQué hace: Verifica si el sentido en el que se cruzó la última frontera del bloque entero es diferente al sentido del cruce inmediatamente anterior (por ejemplo, si el último cruce fue subiendo 1 y el nuevo cruce es bajando -1).Para qué sirve: Es la llave de paso que rompe el bloqueo del filtro cuando hay un cambio de sentido real tras un recorrido largo. Al dar Verdadero, le dice al sistema: "Oye, sé que la marca matemática da el mismo número (ej: 7), pero la dirección cambió, lo que significa que el motor regresó a este punto de forma voluntaria".
+ */
+// Variable global nueva para congelar el pulso exacto del último reporte
+volatile int32_t pulso_ultimo_reporte = 0; 
+
+// Margen de seguridad anti-vibración en pulsos (ej: 20 pulsos)
+// Ajusta este valor según qué tanto vibre tu máquina físicamente
+#define MARGEN_HISTERESIS 40 
+
+
+
+ISR(PCINT2_vect)
+{
+    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
+
+    enc_val = enc_val << 2;
+    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
+    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
+    
+    // MODIFICACIÓN CRÍTICA: Si el main está transmitiendo un intervalo en UDR0,
+    // guardamos los pulsos pero NO levantamos la bandera de telemetría continua
+    // para no asfixiar el bucle de espera de la UART.
+    if (transmitiendo_intervalo == 0)
+    {
+        enc_count_copy_from_ISR = enc_count;
+        isr_flag.send_recorrido_actual = 1;
+    }
+
+    if (mainflag.control_recorrido == 1)
+    {
+        // División entera pura
+        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
+        int32_t marca_detectada;
+        
+        // Variable estática para recordar en qué bloque exacto se hizo el último reporte USB
+        static int32_t bloque_ultimo_reporte = 0; 
+
+        // 1. Identificamos qué marca se cruzó numéricamente
+        if (intervalo_actual != ultimo_bloque_procesado)
+        {
+            if (intervalo_actual > ultimo_bloque_procesado) {
+                marca_detectada = intervalo_actual;
+            } else {
+                marca_detectada = intervalo_actual + 1;
+            }
+
+            // 2. Filtro de Histéresis por Distancia Real
+            int32_t distancia_desde_reporte = enc_count - pulso_ultimo_reporte;
+            if (distancia_desde_reporte < 0) {
+                distancia_desde_reporte = -distancia_desde_reporte;
+            }
+
+            // 3. CONDICIONAL INDESTRUCTIBLE:
+            // Disparamos si la marca numérica es nueva (ej: de 6 a 7)
+            // O si nos alejamos físicamente de la zona de ruido (distancia > MARGEN)
+            // O si el bloque actual es totalmente diferente al bloque donde se reportó (Cruce legítimo por cambio de marcha)
+            if (marca_detectada != intervalo_actual_copy_from_ISR || 
+                distancia_desde_reporte > MARGEN_HISTERESIS ||
+                intervalo_actual != bloque_ultimo_reporte)
+            {
+                motor = MOTOR_OFF;
+                set_motor(motor);
+                set_led_motor(motor);
+
+                // Guardamos el reporte y congelamos el estado actual
+                intervalo_actual_copy_from_ISR = marca_detectada;
+                pulso_ultimo_reporte = enc_count; 
+                bloque_ultimo_reporte = intervalo_actual; // Registramos el bloque del disparo
+                ultimo_bloque_procesado = intervalo_actual;
+
+                mainflag.usb_send_intervalo_completo = 1;
+                
+                                // Si se dispara un intervalo nuevo, forzamos la telemetría para que el main lo atienda
+                enc_count_copy_from_ISR = enc_count;
+                isr_flag.send_recorrido_actual = 1; 
+
+            }
+            else
+            {
+                // Es un rebote de un pulso en la frontera, actualizamos tracking silenciosamente
+                ultimo_bloque_procesado = intervalo_actual;
+            }
+        }
+    }
+}
+/*
+ISR(PCINT2_vect)
+{
+    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
+
+    enc_val = enc_val << 2;
+    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
+    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
+    
+    enc_count_copy_from_ISR = enc_count;
+    isr_flag.send_recorrido_actual = 1;
+
+    if (mainflag.control_recorrido == 1)
+    {
+        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
+        int32_t marca_detectada;
+
+        // 1. Identificamos qué marca se cruzó numéricamente
+        if (intervalo_actual != ultimo_bloque_procesado)
+        {
+            if (intervalo_actual > ultimo_bloque_procesado) {
+                marca_detectada = intervalo_actual;
+            } else {
+                marca_detectada = intervalo_actual + 1;
+            }
+
+            // 2. EL VERDADERO FILTRO DE HISTÉRESIS POR DISTANCIA:
+            // Calculamos la distancia absoluta desde el pulso actual hasta el pulso del último reporte enviado.
+            int32_t distancia_desde_reporte = enc_count - pulso_ultimo_reporte;
+            if (distancia_desde_reporte < 0) {
+                distancia_desde_reporte = -distancia_desde_reporte; // Valor absoluto
+            }
+
+            // SOLO DISPARAMOS si la marca numérica es diferente, 
+            // O si siendo la misma marca, el encoder se alejó lo suficiente (rompió el margen de vibración)
+            if (marca_detectada != intervalo_actual_copy_from_ISR || distancia_desde_reporte > MARGEN_HISTERESIS)
+            {
+                motor = MOTOR_OFF;
+                set_motor(motor);
+                set_led_motor(motor);
+
+                // Guardamos el reporte y congelamos el pulso físico exacto del disparo
+                intervalo_actual_copy_from_ISR = marca_detectada;
+                pulso_ultimo_reporte = enc_count; 
+                ultimo_bloque_procesado = intervalo_actual;
+
+                mainflag.usb_send_intervalo_completo = 1;
+            }
+            else
+            {
+                // Si la marca es la misma y está dentro del margen de ruido,
+                // actualizamos el bloque de tracking silenciosamente para no perder el hilo
+                ultimo_bloque_procesado = intervalo_actual;
+            }
+        }
+    }
+}
+*/
+/*
+ISR(PCINT2_vect)
+{
+    int32_t marca_detectada;
+    static int8_t ultima_direccion = 0; // 1 = subida, -1 = bajada
+
+    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
+
+    enc_val = enc_val << 2;
+    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
+
+    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
+    
+    enc_count_copy_from_ISR = enc_count;
+    isr_flag.send_recorrido_actual = 1;
+
+    if (mainflag.control_recorrido == 1)
+    {
+        // División entera pura
+        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
+        
+        
+        // 1. Detectamos el cambio de bloque entero
+        if (intervalo_actual != ultimo_bloque_procesado)
+        {
+            int8_t direccion_actual = (intervalo_actual > ultimo_bloque_procesado) ? 1 : -1;
+            
+            if (direccion_actual == 1)
+            {
+                // Avance: la marca cruzada es el bloque al que entramos
+                marca_detectada = intervalo_actual;
+            }
+            else
+            {
+                // Reversa: la marca cruzada es el bloque del que venimos
+                marca_detectada = intervalo_actual + 1;
+            }
+
+            // 2. FILTRO DE HISTÉRESIS INTELIGENTE:
+            // Disparamos si la marca es diferente, O si el motor cambió de dirección claramente
+            if (marca_detectada != intervalo_actual_copy_from_ISR || direccion_actual != ultima_direccion)
+            {
+                motor = MOTOR_OFF;
+                set_motor(motor);
+                set_led_motor(motor);
+
+                // Guardamos los estados actuales para el reporte y control
+                intervalo_actual_copy_from_ISR = marca_detectada;
+                ultimo_bloque_procesado = intervalo_actual;
+                ultima_direccion = direccion_actual; // Registramos el sentido del cruce
+
+                // Levantamos la bandera para el main
+                mainflag.usb_send_intervalo_completo = 1;
+            }
+            else
+            {
+                // Es una oscilación por rebote en la misma dirección, solo actualizamos el tracking
+                ultimo_bloque_procesado = intervalo_actual;
+            }
+        }
+    }
+}
+*/
+/*
+ //este codigo no registra el de reversa
+ISR(PCINT2_vect)
+{
+    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
+
+    enc_val = enc_val << 2;
+    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
+
+    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
+    
+    enc_count_copy_from_ISR = enc_count;
+    isr_flag.send_recorrido_actual = 1;
+
+    if (mainflag.control_recorrido == 1)
+    {
+        // División entera pura
+        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
+        int32_t marca_detectada;
+
+        // Determinamos matemáticamente qué marca se cruzó físicamente
+        if (intervalo_actual != ultimo_bloque_procesado)
+        {
+            if (intervalo_actual > ultimo_bloque_procesado)
+            {
+                // Avance: se cruzó la marca del bloque actual
+                marca_detectada = intervalo_actual;
+            }
+            else
+            {
+                // Reversa: se cruzó la marca del bloque inmediatamente superior
+                marca_detectada = intervalo_actual + 1;
+            }
+
+            // BLINDAJE ANTIRREBOTE (Histéresis):
+            // Solo disparamos el USB si la marca detectada es DIFERENTE 
+            // a la última marca que ya le enviamos a la PC.
+            if (marca_detectada != intervalo_actual_copy_from_ISR)
+            {
+                motor = MOTOR_OFF;
+                set_motor(motor);
+                set_led_motor(motor);
+
+                // Guardamos la marca confirmada para el reporte flotante del main
+                intervalo_actual_copy_from_ISR = marca_detectada;
+                
+                // Sincronizamos el bloque base de comparación
+                ultimo_bloque_procesado = intervalo_actual;
+
+                // Levantamos la bandera una única vez
+                mainflag.usb_send_intervalo_completo = 1;
+            }
+            else
+            {
+                // Si la marca es igual por culpa de un rebote físico, 
+                // solo actualizamos el bloque base de tracking sin activar el USB.
+                ultimo_bloque_procesado = intervalo_actual;
+            }
+        }
+    }
+}
+*/    
+/*
+ISR(PCINT2_vect)
+{
+    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
+
+    enc_val = enc_val << 2;
+    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
+
+    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
+    
+    enc_count_copy_from_ISR = enc_count;
+    isr_flag.send_recorrido_actual = 1;
+
+    if (mainflag.control_recorrido == 1)
+    {
+        // División entera pura
+        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
+        
+        if (intervalo_actual != ultimo_bloque_procesado)
+        {
+            motor = MOTOR_OFF;
+            set_motor(motor);
+            set_led_motor(motor);
+
+            // COMPENSACIÓN DE DIRECCIÓN:
+            if (intervalo_actual > ultimo_bloque_procesado)
+            {
+                // Si avanzamos (ej: de bloque 4 a 5), la marca cruzada es el bloque 5
+                intervalo_actual_copy_from_ISR = intervalo_actual;
+            }
+            else
+            {
+                // Si retrocedemos (ej: de bloque 5 a 4), la marca que acabamos de cruzar es la 5
+                intervalo_actual_copy_from_ISR = intervalo_actual + 1;
+            }
+
+            // Actualizamos el bloque de control para el próximo ciclo
+            ultimo_bloque_procesado = intervalo_actual;
+            
+            mainflag.usb_send_intervalo_completo = 1;
+        }
+    }
+}
+ */
+/*
+ISR(PCINT2_vect)
+{
+    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
+
+    enc_val = enc_val << 2;
+    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
+
+    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
+    
+    //
+    enc_count_copy_from_ISR = enc_count;
+    isr_flag.send_recorrido_actual = 1;
+    //
+    if (mainflag.control_recorrido == 1)
+    {
+        // Calculamos el bloque actual de forma entera pura
+        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
+        
+        if (intervalo_actual != intervalo_actual_copy_from_ISR)
+        {
+            motor = MOTOR_OFF;
+            set_motor(motor);
+            set_led_motor(motor);
+            //
+            // Guardamos el bloque para evitar rebotes o repetir el envío
+            intervalo_actual_copy_from_ISR = intervalo_actual;
+            mainflag.usb_send_intervalo_completo = 1;
+            //
+        }
+    }
+}
+ */
+/*
+ISR(PCINT2_vect)
+{
+    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
+
+    enc_val = enc_val << 2;
+    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
+
+    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
+    
+    isr_flag.send_recorrido_actual = 1;
+    recorrido_actual = enc_count * ENCODER_KRESOL;
+
+    if (mainflag.control_recorrido == 1)
+    {
+        // Calculamos el bloque numérico actual (ej: si estás en 3.01m, dará bloque 3)
+        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
+        
+        // Si el bloque actual es distinto al último que procesamos con éxito...
+        if (intervalo_actual != ultimo_bloque_procesado)
+        {
+            motor = MOTOR_OFF;
+            set_motor(motor);
+            set_led_motor(motor);
+
+            mainflag.usb_send_intervalo_completo = 1;
+            
+            // Bloqueamos este intervalo actualizando la marca global.
+            // No volverá a entrar aquí hasta que cambies de bloque (avance o reversa).
+            ultimo_bloque_procesado = intervalo_actual;
+        }
+    }
+}
+*/
+/*
+ISR(PCINT2_vect)
+{
+    
+	//char buff[50];
+	//char str[50];
+
+	//	static int8_t lookup_table[] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
+	//	static uint8_t enc_val = 0;
+	//
+	//CANAL A DEBE DE ESTAR EN PD3 Y CANAL B EN PD2 para esta secuencia:
+	//volatile static int8_t lookup_table[] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
+	//pero como esta al reves, he invertido la tabla lookup
+	volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
+
+	enc_val = enc_val << 2;
+	enc_val = enc_val | ((PIND & 0b00001100) >> 2);
+
+	enc_count = enc_count + lookup_table[enc_val & 0b00001111];
+	
+        //
+        isr_flag.send_recorrido_actual = 1;
+	recorrido_actual = enc_count*ENCODER_KRESOL;
+        //
+
+	if (mainflag.control_recorrido == 1)
+	{
+            // División ultra rápida en 32 bits
+            int32_t intervalo_anterior = enc_count_anterior/pulsos_por_intervalo;
+            int32_t intervalo_actual = enc_count/pulsos_por_intervalo;
+            
+            if (intervalo_actual != intervalo_anterior)
+            {
+                motor = MOTOR_OFF;
+                set_motor(motor);
+                set_led_motor(motor);
+
+                // Guardamos el bloque actual en entero (Operación instantánea)
+                //intervalo_reporte = intervalo_actual; 
+
+                //
+                mainflag.usb_send_intervalo_completo = 1;
+                //
+                //mainflag.control_recorrido = 0;
+
+                
+            }
+            // Guardamos el conteo actual para comparar en la siguiente interrupción
+            enc_count_anterior = enc_count;
+	}
+}
+*/
+/*
+ * 
+ISR(PCINT2_vect)
+{
+	char buff[50];
+	char str[50];
+
+	//	static int8_t lookup_table[] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
+	//	static uint8_t enc_val = 0;
+	//
+	//CANAL A DEBE DE ESTAR EN PD3 Y CANAL B EN PD2 para esta secuencia:
+	//volatile static int8_t lookup_table[] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
+	//pero como esta al reves, he invertido la tabla lookup
+	volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
+	//volatile static uint8_t enc_val = 0;
+
+	enc_val = enc_val << 2;
+	enc_val = enc_val | ((PIND & 0b00001100) >> 2);
+
+	enc_count = enc_count + lookup_table[enc_val & 0b00001111];
+	
+        //
+        isr_flag.send_recorrido_actual = 1;
+	recorrido_actual = enc_count*ENCODER_KRESOL;
+        //
+
+	if (mainflag.control_recorrido == 1)
+	{
+		recorrido_1vuelta = recorrido_actual - (intervalo*num_vuelta);
+		//if	(AreSame(recorrido_1vuelta,intervalo))//if (recorrido_1vuelta >= intervalo)
+		if (recorrido_1vuelta >= intervalo)
+		{
+			num_vuelta++;
+			//
+			motor = MOTOR_OFF;
+			set_motor(motor);
+                        
+			set_led_motor(motor);
+			mainflag.usb_send_intervalo_completo = 1;
+			//
+			//mainflag.control_recorrido = 0;
+
+		}
+	}
+}
+ */
