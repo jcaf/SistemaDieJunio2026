@@ -159,7 +159,7 @@ void set_execution(int execution)
 	else if (execution == RESET)
 	{
 		//
-		cli();
+		cli(); 
 
 		//num_vuelta = 0;
 		enc_count = 0;
@@ -168,10 +168,10 @@ void set_execution(int execution)
                 
 		recorrido_actual = enc_count*ENCODER_KRESOL;
 
-                //ultimo_bloque_procesado = 0;
+                ultimo_bloque_procesado = 0;
                  // Forzamos un valor absurdo para obligar al ISR a calcular la posición real 
                 // en su primerísima interrupción, sin importar si va a positivos o negativos.
-                ultimo_bloque_procesado = -999; 
+                //ultimo_bloque_procesado = -999; 
                 
 		USB_send_data_float(USB_DATACODE_SET_RECORRIDO_ACTUAL, recorrido_actual);
 
@@ -652,7 +652,7 @@ ISR(PCINT2_vect)
         isr_flag.send_recorrido_actual = 1;
     }
 
-    if (mainflag.control_recorrido == 1)
+    if (1)//(mainflag.control_recorrido == 1)
     {
         // División entera pura
         int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
@@ -684,9 +684,14 @@ ISR(PCINT2_vect)
                 distancia_desde_reporte > MARGEN_HISTERESIS ||
                 intervalo_actual != bloque_ultimo_reporte)
             {
-                motor = MOTOR_OFF;
-                set_motor(motor);
-                set_led_motor(motor);
+                
+                if (mainflag.control_recorrido == 1)
+                {
+                    motor = MOTOR_OFF;
+                    set_motor(motor);
+                    set_led_motor(motor);
+                }
+                
 
                 // Guardamos el reporte y congelamos el estado actual
                 intervalo_actual_copy_from_ISR = marca_detectada;
@@ -696,7 +701,8 @@ ISR(PCINT2_vect)
 
                 mainflag.usb_send_intervalo_completo = 1;
                 
-                                // Si se dispara un intervalo nuevo, forzamos la telemetría para que el main lo atienda
+                                
+                //Si se dispara un intervalo nuevo, forzamos la telemetría para que el main lo atienda
                 enc_count_copy_from_ISR = enc_count;
                 isr_flag.send_recorrido_actual = 1; 
 
@@ -709,395 +715,3 @@ ISR(PCINT2_vect)
         }
     }
 }
-/*
-ISR(PCINT2_vect)
-{
-    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
-
-    enc_val = enc_val << 2;
-    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
-    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
-    
-    enc_count_copy_from_ISR = enc_count;
-    isr_flag.send_recorrido_actual = 1;
-
-    if (mainflag.control_recorrido == 1)
-    {
-        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
-        int32_t marca_detectada;
-
-        // 1. Identificamos qué marca se cruzó numéricamente
-        if (intervalo_actual != ultimo_bloque_procesado)
-        {
-            if (intervalo_actual > ultimo_bloque_procesado) {
-                marca_detectada = intervalo_actual;
-            } else {
-                marca_detectada = intervalo_actual + 1;
-            }
-
-            // 2. EL VERDADERO FILTRO DE HISTÉRESIS POR DISTANCIA:
-            // Calculamos la distancia absoluta desde el pulso actual hasta el pulso del último reporte enviado.
-            int32_t distancia_desde_reporte = enc_count - pulso_ultimo_reporte;
-            if (distancia_desde_reporte < 0) {
-                distancia_desde_reporte = -distancia_desde_reporte; // Valor absoluto
-            }
-
-            // SOLO DISPARAMOS si la marca numérica es diferente, 
-            // O si siendo la misma marca, el encoder se alejó lo suficiente (rompió el margen de vibración)
-            if (marca_detectada != intervalo_actual_copy_from_ISR || distancia_desde_reporte > MARGEN_HISTERESIS)
-            {
-                motor = MOTOR_OFF;
-                set_motor(motor);
-                set_led_motor(motor);
-
-                // Guardamos el reporte y congelamos el pulso físico exacto del disparo
-                intervalo_actual_copy_from_ISR = marca_detectada;
-                pulso_ultimo_reporte = enc_count; 
-                ultimo_bloque_procesado = intervalo_actual;
-
-                mainflag.usb_send_intervalo_completo = 1;
-            }
-            else
-            {
-                // Si la marca es la misma y está dentro del margen de ruido,
-                // actualizamos el bloque de tracking silenciosamente para no perder el hilo
-                ultimo_bloque_procesado = intervalo_actual;
-            }
-        }
-    }
-}
-*/
-/*
-ISR(PCINT2_vect)
-{
-    int32_t marca_detectada;
-    static int8_t ultima_direccion = 0; // 1 = subida, -1 = bajada
-
-    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
-
-    enc_val = enc_val << 2;
-    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
-
-    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
-    
-    enc_count_copy_from_ISR = enc_count;
-    isr_flag.send_recorrido_actual = 1;
-
-    if (mainflag.control_recorrido == 1)
-    {
-        // División entera pura
-        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
-        
-        
-        // 1. Detectamos el cambio de bloque entero
-        if (intervalo_actual != ultimo_bloque_procesado)
-        {
-            int8_t direccion_actual = (intervalo_actual > ultimo_bloque_procesado) ? 1 : -1;
-            
-            if (direccion_actual == 1)
-            {
-                // Avance: la marca cruzada es el bloque al que entramos
-                marca_detectada = intervalo_actual;
-            }
-            else
-            {
-                // Reversa: la marca cruzada es el bloque del que venimos
-                marca_detectada = intervalo_actual + 1;
-            }
-
-            // 2. FILTRO DE HISTÉRESIS INTELIGENTE:
-            // Disparamos si la marca es diferente, O si el motor cambió de dirección claramente
-            if (marca_detectada != intervalo_actual_copy_from_ISR || direccion_actual != ultima_direccion)
-            {
-                motor = MOTOR_OFF;
-                set_motor(motor);
-                set_led_motor(motor);
-
-                // Guardamos los estados actuales para el reporte y control
-                intervalo_actual_copy_from_ISR = marca_detectada;
-                ultimo_bloque_procesado = intervalo_actual;
-                ultima_direccion = direccion_actual; // Registramos el sentido del cruce
-
-                // Levantamos la bandera para el main
-                mainflag.usb_send_intervalo_completo = 1;
-            }
-            else
-            {
-                // Es una oscilación por rebote en la misma dirección, solo actualizamos el tracking
-                ultimo_bloque_procesado = intervalo_actual;
-            }
-        }
-    }
-}
-*/
-/*
- //este codigo no registra el de reversa
-ISR(PCINT2_vect)
-{
-    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
-
-    enc_val = enc_val << 2;
-    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
-
-    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
-    
-    enc_count_copy_from_ISR = enc_count;
-    isr_flag.send_recorrido_actual = 1;
-
-    if (mainflag.control_recorrido == 1)
-    {
-        // División entera pura
-        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
-        int32_t marca_detectada;
-
-        // Determinamos matemáticamente qué marca se cruzó físicamente
-        if (intervalo_actual != ultimo_bloque_procesado)
-        {
-            if (intervalo_actual > ultimo_bloque_procesado)
-            {
-                // Avance: se cruzó la marca del bloque actual
-                marca_detectada = intervalo_actual;
-            }
-            else
-            {
-                // Reversa: se cruzó la marca del bloque inmediatamente superior
-                marca_detectada = intervalo_actual + 1;
-            }
-
-            // BLINDAJE ANTIRREBOTE (Histéresis):
-            // Solo disparamos el USB si la marca detectada es DIFERENTE 
-            // a la última marca que ya le enviamos a la PC.
-            if (marca_detectada != intervalo_actual_copy_from_ISR)
-            {
-                motor = MOTOR_OFF;
-                set_motor(motor);
-                set_led_motor(motor);
-
-                // Guardamos la marca confirmada para el reporte flotante del main
-                intervalo_actual_copy_from_ISR = marca_detectada;
-                
-                // Sincronizamos el bloque base de comparación
-                ultimo_bloque_procesado = intervalo_actual;
-
-                // Levantamos la bandera una única vez
-                mainflag.usb_send_intervalo_completo = 1;
-            }
-            else
-            {
-                // Si la marca es igual por culpa de un rebote físico, 
-                // solo actualizamos el bloque base de tracking sin activar el USB.
-                ultimo_bloque_procesado = intervalo_actual;
-            }
-        }
-    }
-}
-*/    
-/*
-ISR(PCINT2_vect)
-{
-    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
-
-    enc_val = enc_val << 2;
-    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
-
-    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
-    
-    enc_count_copy_from_ISR = enc_count;
-    isr_flag.send_recorrido_actual = 1;
-
-    if (mainflag.control_recorrido == 1)
-    {
-        // División entera pura
-        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
-        
-        if (intervalo_actual != ultimo_bloque_procesado)
-        {
-            motor = MOTOR_OFF;
-            set_motor(motor);
-            set_led_motor(motor);
-
-            // COMPENSACIÓN DE DIRECCIÓN:
-            if (intervalo_actual > ultimo_bloque_procesado)
-            {
-                // Si avanzamos (ej: de bloque 4 a 5), la marca cruzada es el bloque 5
-                intervalo_actual_copy_from_ISR = intervalo_actual;
-            }
-            else
-            {
-                // Si retrocedemos (ej: de bloque 5 a 4), la marca que acabamos de cruzar es la 5
-                intervalo_actual_copy_from_ISR = intervalo_actual + 1;
-            }
-
-            // Actualizamos el bloque de control para el próximo ciclo
-            ultimo_bloque_procesado = intervalo_actual;
-            
-            mainflag.usb_send_intervalo_completo = 1;
-        }
-    }
-}
- */
-/*
-ISR(PCINT2_vect)
-{
-    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
-
-    enc_val = enc_val << 2;
-    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
-
-    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
-    
-    //
-    enc_count_copy_from_ISR = enc_count;
-    isr_flag.send_recorrido_actual = 1;
-    //
-    if (mainflag.control_recorrido == 1)
-    {
-        // Calculamos el bloque actual de forma entera pura
-        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
-        
-        if (intervalo_actual != intervalo_actual_copy_from_ISR)
-        {
-            motor = MOTOR_OFF;
-            set_motor(motor);
-            set_led_motor(motor);
-            //
-            // Guardamos el bloque para evitar rebotes o repetir el envío
-            intervalo_actual_copy_from_ISR = intervalo_actual;
-            mainflag.usb_send_intervalo_completo = 1;
-            //
-        }
-    }
-}
- */
-/*
-ISR(PCINT2_vect)
-{
-    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
-
-    enc_val = enc_val << 2;
-    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
-
-    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
-    
-    isr_flag.send_recorrido_actual = 1;
-    recorrido_actual = enc_count * ENCODER_KRESOL;
-
-    if (mainflag.control_recorrido == 1)
-    {
-        // Calculamos el bloque numérico actual (ej: si estás en 3.01m, dará bloque 3)
-        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
-        
-        // Si el bloque actual es distinto al último que procesamos con éxito...
-        if (intervalo_actual != ultimo_bloque_procesado)
-        {
-            motor = MOTOR_OFF;
-            set_motor(motor);
-            set_led_motor(motor);
-
-            mainflag.usb_send_intervalo_completo = 1;
-            
-            // Bloqueamos este intervalo actualizando la marca global.
-            // No volverá a entrar aquí hasta que cambies de bloque (avance o reversa).
-            ultimo_bloque_procesado = intervalo_actual;
-        }
-    }
-}
-*/
-/*
-ISR(PCINT2_vect)
-{
-    
-	//char buff[50];
-	//char str[50];
-
-	//	static int8_t lookup_table[] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
-	//	static uint8_t enc_val = 0;
-	//
-	//CANAL A DEBE DE ESTAR EN PD3 Y CANAL B EN PD2 para esta secuencia:
-	//volatile static int8_t lookup_table[] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
-	//pero como esta al reves, he invertido la tabla lookup
-	volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
-
-	enc_val = enc_val << 2;
-	enc_val = enc_val | ((PIND & 0b00001100) >> 2);
-
-	enc_count = enc_count + lookup_table[enc_val & 0b00001111];
-	
-        //
-        isr_flag.send_recorrido_actual = 1;
-	recorrido_actual = enc_count*ENCODER_KRESOL;
-        //
-
-	if (mainflag.control_recorrido == 1)
-	{
-            // División ultra rápida en 32 bits
-            int32_t intervalo_anterior = enc_count_anterior/pulsos_por_intervalo;
-            int32_t intervalo_actual = enc_count/pulsos_por_intervalo;
-            
-            if (intervalo_actual != intervalo_anterior)
-            {
-                motor = MOTOR_OFF;
-                set_motor(motor);
-                set_led_motor(motor);
-
-                // Guardamos el bloque actual en entero (Operación instantánea)
-                //intervalo_reporte = intervalo_actual; 
-
-                //
-                mainflag.usb_send_intervalo_completo = 1;
-                //
-                //mainflag.control_recorrido = 0;
-
-                
-            }
-            // Guardamos el conteo actual para comparar en la siguiente interrupción
-            enc_count_anterior = enc_count;
-	}
-}
-*/
-/*
- * 
-ISR(PCINT2_vect)
-{
-	char buff[50];
-	char str[50];
-
-	//	static int8_t lookup_table[] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
-	//	static uint8_t enc_val = 0;
-	//
-	//CANAL A DEBE DE ESTAR EN PD3 Y CANAL B EN PD2 para esta secuencia:
-	//volatile static int8_t lookup_table[] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
-	//pero como esta al reves, he invertido la tabla lookup
-	volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
-	//volatile static uint8_t enc_val = 0;
-
-	enc_val = enc_val << 2;
-	enc_val = enc_val | ((PIND & 0b00001100) >> 2);
-
-	enc_count = enc_count + lookup_table[enc_val & 0b00001111];
-	
-        //
-        isr_flag.send_recorrido_actual = 1;
-	recorrido_actual = enc_count*ENCODER_KRESOL;
-        //
-
-	if (mainflag.control_recorrido == 1)
-	{
-		recorrido_1vuelta = recorrido_actual - (intervalo*num_vuelta);
-		//if	(AreSame(recorrido_1vuelta,intervalo))//if (recorrido_1vuelta >= intervalo)
-		if (recorrido_1vuelta >= intervalo)
-		{
-			num_vuelta++;
-			//
-			motor = MOTOR_OFF;
-			set_motor(motor);
-                        
-			set_led_motor(motor);
-			mainflag.usb_send_intervalo_completo = 1;
-			//
-			//mainflag.control_recorrido = 0;
-
-		}
-	}
-}
- */
