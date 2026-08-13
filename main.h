@@ -20,14 +20,23 @@ extern volatile float ENCODER_KRESOL;
 struct _mainflag
 {
 		unsigned sysTickMs :1;
-		unsigned control_recorrido:1;
-		unsigned usb_send_selector:1;
-		unsigned usb_send_execution:1;
-		unsigned usb_send_motor:1;
-		unsigned usb_send_led_enlace:1;
-		unsigned usb_send_intervalo_completo:1;
-		unsigned __a:1;
+		
+//        unsigned control_recorrido:1;
+//		unsigned usb_send_selector:1;
+//		unsigned usb_send_execution:1;
+//		unsigned usb_send_motor:1;
+//		unsigned usb_send_led_enlace:1;
+//		unsigned usb_send_intervalo_completo:1;
+		unsigned __a:7;
 };
+
+extern volatile uint8_t control_recorrido;
+extern volatile uint8_t usb_send_selector;
+extern volatile uint8_t  usb_send_execution;
+extern volatile uint8_t usb_send_motor;
+extern volatile uint8_t usb_send_led_enlace;
+extern volatile uint8_t usb_send_intervalo_completo;
+extern volatile uint8_t send_recorrido_actual;
 
 extern volatile struct _mainflag mainflag;
 

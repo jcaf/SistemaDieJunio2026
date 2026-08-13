@@ -1,4 +1,4 @@
-/*
+/* SISTEMA DIE 2026
  * main.c
  *
  *  Created on: 20 dic. 2024
@@ -117,11 +117,19 @@ float EEMEM EEMEM_longitudArcoPorResolucion=1000.0f;//inicialmente un valor para
 volatile struct _isr_flag
 {
 	unsigned sysTickMs :1;
-	unsigned send_recorrido_actual :1;
-	unsigned __a :6;
+	//unsigned send_recorrido_actual :1;
+	unsigned __a :7;
 } isr_flag = { 0 };
 
 volatile struct _mainflag mainflag;
+
+volatile uint8_t control_recorrido;
+volatile uint8_t usb_send_selector;
+volatile uint8_t  usb_send_execution;
+volatile uint8_t usb_send_motor;
+volatile uint8_t usb_send_led_enlace;
+volatile uint8_t usb_send_intervalo_completo;
+volatile uint8_t send_recorrido_actual;
 
 volatile static uint8_t enc_val = 0;
 volatile uint8_t old_PORTRxENC_CHB;//track last change in quadrature
