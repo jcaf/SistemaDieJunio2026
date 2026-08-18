@@ -163,9 +163,18 @@ void set_selector(int selector);
 
 #define USB_DATACODE_CONTROL_ACTIVATED 'O'
 
-#define USB_DATACODE_RESET_BOARD 'P'
+
+//+-
+#define USB_DATACODE_GET_RECORRIDO_ACTUAL      'P'
+#define USB_DATACODE_RESP_RECORRIDO_ACTUAL     'Q'
+//+-
+
+#define USB_DATACODE_RESET_BOARD 'R'    //USB_DATACODE_RESET_BOARD DEBE SER EL ULTIMO CODIGO
+//if ((c >= USB_DATACODE_SET_RECORRIDO_TOTAL) &&    (c <= USB_DATACODE_RESET_BOARD))
+//++++++++++++++++++++++++++++++++++++++++++++++
 
 ////////////////////////////////////
+extern volatile float recorrido_actual;
 extern float recorrido_total;
 extern volatile float intervalo;
 extern volatile int32_t pulsos_por_intervalo;

@@ -19,6 +19,7 @@
 #include <avr/eeprom.h>
 #include "../usart/usart.h"
 
+
 #define RX_CSTR_SIZE 32
 
 struct _job_rx
@@ -156,7 +157,7 @@ void USB_commands(char USB_DATACODE, char *USB_payload_char)
 		break;
 
 		case USB_DATACODE_CONTROL_ACTIVATED:
-			mainflag.control_recorrido = 1;
+			control_recorrido = 1;
 
 			USB_send_data_integer(USB_DATACODE_CONTROL_ACTIVATED, 0);
 
@@ -172,7 +173,7 @@ void USB_commands(char USB_DATACODE, char *USB_payload_char)
 
 		//getters, prepare
 		case USB_DATACODE_GET_SELECTOR:
-			mainflag.usb_send_selector =1;
+			usb_send_selector =1;
 			//
 			indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
 			indicatorTimed_run();
@@ -180,7 +181,7 @@ void USB_commands(char USB_DATACODE, char *USB_payload_char)
 
 		break;
 		case USB_DATACODE_GET_EXECUTION:
-			mainflag.usb_send_execution = 1;
+			usb_send_execution = 1;
 			//
 			indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
 			indicatorTimed_run();
@@ -188,7 +189,7 @@ void USB_commands(char USB_DATACODE, char *USB_payload_char)
 
 		break;
 		case USB_DATACODE_GET_MOTOR:
-			mainflag.usb_send_motor = 1;
+			usb_send_motor = 1;
 			//
 			indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
 			indicatorTimed_run();
@@ -196,13 +197,17 @@ void USB_commands(char USB_DATACODE, char *USB_payload_char)
 
 		break;
 		case USB_DATACODE_GET_LED_ENLACE:
-			mainflag.usb_send_led_enlace = 1;
+			usb_send_led_enlace = 1;
 			//
 			indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
 			indicatorTimed_run();
 			//
 
 		break;
+                
+                case USB_DATACODE_GET_RECORRIDO_ACTUAL:
+                        USB_send_data_float(USB_DATACODE_RESP_RECORRIDO_ACTUAL, recorrido_actual);
+                    break;
 
 		default:
 			break;
@@ -544,7 +549,7 @@ void rx_trama(void)
 				break;
 
 				case USB_DATACODE_CONTROL_ACTIVATED:
-					mainflag.control_recorrido = 1;
+					control_recorrido = 1;
 					//
 					indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
 					indicatorTimed_run();
@@ -557,7 +562,7 @@ void rx_trama(void)
 
 				//getters, prepare
 				case USB_DATACODE_GET_SELECTOR:
-					mainflag.usb_send_selector =1;
+					usb_send_selector =1;
 					//
 					indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
 					indicatorTimed_run();
@@ -565,7 +570,7 @@ void rx_trama(void)
 
 				break;
 				case USB_DATACODE_GET_EXECUTION:
-					mainflag.usb_send_execution = 1;
+					usb_send_execution = 1;
 					//
 					indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
 					indicatorTimed_run();
@@ -573,7 +578,7 @@ void rx_trama(void)
 
 				break;
 				case USB_DATACODE_GET_MOTOR:
-					mainflag.usb_send_motor = 1;
+					usb_send_motor = 1;
 					//
 					indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
 					indicatorTimed_run();
@@ -581,7 +586,7 @@ void rx_trama(void)
 
 				break;
 				case USB_DATACODE_GET_LED_ENLACE:
-					mainflag.usb_send_led_enlace = 1;
+					usb_send_led_enlace = 1;
 					//
 					indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
 					indicatorTimed_run();

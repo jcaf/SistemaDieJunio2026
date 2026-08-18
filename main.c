@@ -143,29 +143,29 @@ void set_execution(int execution)
 		motor = MOTOR_ON;
 		set_motor(motor);
 		set_led_motor(motor);
-		//mainflag.control_recorrido = 1;//Ahora el control se activa desde que se presiona el boton ACEPTAR en el software.
+		//control_recorrido = 1;//Ahora el control se activa desde que se presiona el boton ACEPTAR en el software.
 
-		mainflag.usb_send_execution = 1;
+		usb_send_execution = 1;
 	}
 	else if (execution == PAUSA)
 	{
 		motor = MOTOR_OFF;
 		set_motor(motor);//espera a la orden de inicio
 		set_led_motor(motor);
-		//mainflag.control_recorrido = 0;
-		//mainflag.usb_send_motor = 1;
+		//control_recorrido = 0;
+		//usb_send_motor = 1;
 
-		mainflag.usb_send_execution = 1;
+		usb_send_execution = 1;
 	}
 	else if (execution == PARAR)
 	{
 		motor = MOTOR_OFF;
 		set_motor(motor);//espera a la orden de inicio
 		set_led_motor(motor);
-		mainflag.control_recorrido = 0;
-		//mainflag.usb_send_motor = 1;
+		control_recorrido = 0;
+		//usb_send_motor = 1;
 
-		mainflag.usb_send_execution = 1;
+		usb_send_execution = 1;
 	}
 	else if (execution == RESET)
 	{
@@ -184,15 +184,15 @@ void set_execution(int execution)
                  transmitiendo_intervalo = 0; // Liberamos el escudo de la UART
                 intervalo_actual_last = 0;
                  
-                mainflag.usb_send_intervalo_completo = 0;
-                isr_flag.send_recorrido_actual = 0;
+                usb_send_intervalo_completo = 0;
+                send_recorrido_actual = 0;
                  // Forzamos un valor absurdo para obligar al ISR a calcular la posición real 
                 // en su primerísima interrupción, sin importar si va a positivos o negativos.
                 //ultimo_bloque_procesado = -999; 
                 
 		USB_send_data_float(USB_DATACODE_SET_RECORRIDO_ACTUAL, recorrido_actual);
 
-		mainflag.usb_send_execution = 1;
+		usb_send_execution = 1;
 		sei();
 	}
 }
@@ -435,7 +435,7 @@ int main(void)
 				{
 					pinGetLevel_clearChange(PGLEVEL_LYOUT_KEY_P1UP);
 					//
-					if (mainflag.control_recorrido == 0)
+					if (control_recorrido == 0)
 					{
 						if (pinGetLevel_level(PGLEVEL_LYOUT_KEY_P1UP)== 0)	//active in low
 						{
@@ -467,7 +467,7 @@ int main(void)
 				{
 					pinGetLevel_clearChange(PGLEVEL_LYOUT_KEY_P2DOWN);
 					//
-					if (mainflag.control_recorrido == 0)
+					if (control_recorrido == 0)
 					{
 
 						if (pinGetLevel_level(PGLEVEL_LYOUT_KEY_P2DOWN)== 0)	//active in low
@@ -498,88 +498,66 @@ int main(void)
 
 
 		//Send data to Host PC
-		if (mainflag.usb_send_selector)
+		if (usb_send_selector)
 		{
 			USB_send_data_integer(USB_DATACODE_SET_SELECTOR, selector);
-			mainflag.usb_send_selector =0;
+			usb_send_selector =0;
 		}
-		if (mainflag.usb_send_execution)
+		if (usb_send_execution)
 		{
 			USB_send_data_integer(USB_DATACODE_SET_EXECUTION, execution);
-			mainflag.usb_send_execution = 0;
+			usb_send_execution = 0;
 		}
-		if (mainflag.usb_send_motor)
+		if (usb_send_motor)
 		{
 			USB_send_data_integer(USB_DATACODE_SET_MOTOR, motor);
-			mainflag.usb_send_motor = 0;
+			usb_send_motor = 0;
 		}
-		if (mainflag.usb_send_led_enlace)
+		if (usb_send_led_enlace)
 		{
 			USB_send_data_integer(USB_DATACODE_SET_LED_ENLACE, led_enlace);
-			mainflag.usb_send_led_enlace = 0;
+			usb_send_led_enlace = 0;
 		}
 
                 int32_t enc_count_copia = 0;    
                 int32_t intervalo_actual_copia = 0;
                 int8_t es_intervalo_completo=0;
-		////////////////////////////////////////////////////////////////////////
-                //1ero se calcula el recorrido actual y despues se envia el USB_DATACODE_INTERVALO_COMPLETO
-		/*
-                if (isr_flag.send_recorrido_actual)
-		{
-			//recorrido_actual = enc_count*ENCODER_KRESOL; //bug
-                        
-                        
-                        ATOMIC_BLOCK(ATOMIC_FORCEON)
-                        {
-                            enc_count_copia = enc_count_copy_from_ISR;
-                            intervalo_actual_copia = intervalo_actual_copy_from_ISR;
-                            //
-                        }
-                        
-                        if (mainflag.usb_send_intervalo_completo == 0)
-                        {
-                            recorrido_actual = (float) enc_count_copia * ENCODER_KRESOL;
-                        }
-                        else
-                        {
-                            // CORRECCIÓN MATEMÁTICA: Forzamos el valor flotante teórico exacto
-                            // Ej: Si intervalo_actual es 9 e intervalo es 1.00f, dará 9.00f exacto.
-
-                            recorrido_actual = (float) intervalo_actual_copia * intervalo;
-                        }
-                              
-                        
-			USB_send_data_float(USB_DATACODE_SET_RECORRIDO_ACTUAL, recorrido_actual);
-			isr_flag.send_recorrido_actual = 0;
-			//
-		}
-		if (mainflag.usb_send_intervalo_completo)
-		{
-			USB_send_data_integer(USB_DATACODE_INTERVALO_COMPLETO, 0);
-			mainflag.usb_send_intervalo_completo = 0;
-
-			//
-			indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
-			indicatorTimed_run();
-			//
-		}
-                */
-                if (isr_flag.send_recorrido_actual)
+		
+                
+                /* Arquitectura
+                 * ISR
+                    ?
+                    ? escribe variables
+                    ?
+                   variables compartidas
+                    ?
+                    ?
+                   MAIN
+                    ?
+                    ??? IRQ OFF
+                    ?     copiar datos
+                    ?     copiar flags
+                    ?     limpiar flags
+                    ?
+                    ??? IRQ ON
+                    ?
+                    ??? transmitir UART
+                 */
+                if (send_recorrido_actual)
                 {
                     ATOMIC_BLOCK(ATOMIC_FORCEON)
                     {
                         enc_count_copia = enc_count_copy_from_ISR;
                         intervalo_actual_copia = intervalo_actual_copy_from_ISR;
-                        es_intervalo_completo = mainflag.usb_send_intervalo_completo; 
+                        es_intervalo_completo = usb_send_intervalo_completo; 
 
-                        if(es_intervalo_completo) 
+                        if (es_intervalo_completo) 
                         {
-                            mainflag.usb_send_intervalo_completo = 0;
+                            usb_send_intervalo_completo = 0;
                         }
 
                         // OPTIMIZACIÓN: Limpiamos la bandera aquí dentro para que sea una operación atómica
-                        isr_flag.send_recorrido_actual = 0; 
+                        send_recorrido_actual = 0; 
                     }
 
                     if (es_intervalo_completo == 0)
@@ -592,6 +570,9 @@ int main(void)
                     {
                         // ¡Llegamos al intervalo! Activamos el escudo protector
                         transmitiendo_intervalo = 1;
+
+                        // CORRECCIÓN MATEMÁTICA: Forzamos el valor flotante teórico exacto
+                        // Ej: Si intervalo_actual es 9 e intervalo es 1.00f, dará 9.00f exacto.
                         
                         recorrido_actual = (float) intervalo_actual_copia * intervalo;
 
@@ -667,7 +648,7 @@ ISR(PCINT2_vect)
     }
 
     // 3. Lógica de control de intervalos por bloques enteros
-    if (1) // (mainflag.control_recorrido == 1)
+    if (1) // (control_recorrido == 1)
     {
         // División entera de 32 bits ultra rápida
         int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
@@ -683,7 +664,8 @@ ISR(PCINT2_vect)
             // Determinamos la dirección del cruce actual y asignamos la marca teórica exacta
             int8_t direccion_actual = (intervalo_actual > intervalo_actual_last) ? 1 : -1;
             
-            if (direccion_actual == 1) {
+            if (direccion_actual == 1) 
+            {
                 nuevo_intervalo_aceptado = intervalo_actual;      // Avance (Subida)
             } else {
                 nuevo_intervalo_aceptado = intervalo_actual + 1;  // Reversa (Bajada)
@@ -691,7 +673,8 @@ ISR(PCINT2_vect)
            
             // Calculamos la distancia física pura respecto al pulso del último reporte válido
             int32_t distancia_pulsos_enc_count = enc_count - enc_count_last;
-            if (distancia_pulsos_enc_count < 0) {
+            if (distancia_pulsos_enc_count < 0) 
+            {
                 distancia_pulsos_enc_count = -distancia_pulsos_enc_count;
             }
 
@@ -703,7 +686,7 @@ ISR(PCINT2_vect)
                (direccion_actual == direccion_ultimo_reporte && distancia_pulsos_enc_count > MARGEN_HISTERESIS) ||
                (direccion_actual != direccion_ultimo_reporte))
             {
-                if (mainflag.control_recorrido == 1)
+                if (control_recorrido == 1)
                 {
                     motor = MOTOR_OFF;
                     set_motor(motor);
@@ -717,11 +700,11 @@ ISR(PCINT2_vect)
                 intervalo_actual_last = intervalo_actual;
             
                 // Levantamos la bandera para el reporte seguro en el main()
-                mainflag.usb_send_intervalo_completo = 1;
+                usb_send_intervalo_completo = 1;
                 
                 // Forzamos la actualización inmediata de la telemetría con los datos del pulso del corte
                 enc_count_copy_from_ISR = enc_count;
-                isr_flag.send_recorrido_actual = 1; 
+                send_recorrido_actual = 1; 
             }
             else
             {
@@ -732,189 +715,3 @@ ISR(PCINT2_vect)
         }
     }
 }
-
-/*
-ISR(PCINT2_vect)
-{
-    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
-
-    // 1. Lectura del encoder y actualización del conteo puro de pulsos
-    enc_val = enc_val << 2;
-    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
-    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
-    
-    // 2. Control de telemetría continua (Escudo de protección UART)
-    if (transmitiendo_intervalo == 0)
-    {
-        enc_count_copy_from_ISR = enc_count;
-        isr_flag.send_recorrido_actual = 1;
-    }
-
-    // 3. Lógica de control de intervalos
-    if (1) // (mainflag.control_recorrido == 1)
-    {
-        // División entera de 32 bits (determina el bloque matemático actual)
-        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
-        int32_t nuevo_intervalo_aceptado;
-
-        // Evaluamos únicamente si el encoder físicamente cruzó la frontera de un bloque entero
-        if (intervalo_actual != intervalo_actual_last)
-        {
-            // Determinamos la marca teórica exacta según el sentido de giro
-            if (intervalo_actual > intervalo_actual_last) 
-            {
-                nuevo_intervalo_aceptado = intervalo_actual;      // Avance (Subida)
-            } else {
-                nuevo_intervalo_aceptado = intervalo_actual + 1;  // Reversa (Bajada)
-            }
-           
-            // Calculamos la distancia física recorrida desde el último punto de reposo del encoder
-            int32_t distancia_pulsos_enc_count = enc_count - enc_count_last;
-            if (distancia_pulsos_enc_count < 0) {
-                distancia_pulsos_enc_count = -distancia_pulsos_enc_count;
-            }
-
-            // EL FILTRO INDUSTRIAL DEFINITIVO:
-            // Disparamos si descubrimos una marca numérica que nunca hemos enviado (Avance limpio),
-            // O si, estando en la misma marca (Retorno de reversa), la distancia física desde el 
-            // punto máximo de inercia supera los 4 pulsos de la zona muerta contra ruido.
-            if (nuevo_intervalo_aceptado != intervalo_actual_copy_from_ISR || 
-                distancia_pulsos_enc_count > MARGEN_HISTERESIS)
-            {
-                if (mainflag.control_recorrido == 1)
-                {
-                    motor = MOTOR_OFF;
-                    set_motor(motor);
-                    set_led_motor(motor);
-                }
-
-                // Congelamos los estados de control y reporte actuales
-                intervalo_actual_copy_from_ISR = nuevo_intervalo_aceptado;
-                enc_count_last = enc_count; 
-                intervalo_actual_last = intervalo_actual;
-            
-                // Levantamos la bandera para que el main() despache el reporte atómico por USB
-                mainflag.usb_send_intervalo_completo = 1;
-                
-                // Forzamos la actualización inmediata de la telemetría
-                enc_count_copy_from_ISR = enc_count;
-                isr_flag.send_recorrido_actual = 1; 
-            }
-            else
-            {
-                // Es una vibración de pocos pulsos atrapada en la frontera.
-                // Actualizamos el tracking de frontera de forma silenciosa sin disparar el USB.
-                intervalo_actual_last = intervalo_actual;
-            }
-        }
-        else
-        {
-            // PIEZA MAESTRA: Mientras el motor se mueva libremente dentro del mismo bloque 
-            // (avanzando por inercia o de largo hasta 7.8m), enc_count_last sigue al encoder 
-            // como una sombra. Esto registra el "pico" real antes de cambiar de marcha.
-            enc_count_last = enc_count; 
-        }
-    }
-}
-*/
-/*
-
-ISR(PCINT2_vect)
-{
-    volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
-
-    enc_val = enc_val << 2;
-    enc_val = enc_val | ((PIND & 0b00001100) >> 2);
-    enc_count = enc_count + lookup_table[enc_val & 0b00001111];
-    
-    // MODIFICACIÓN CRÍTICA: Si el main está transmitiendo un intervalo en UDR0,
-    // guardamos los pulsos pero NO levantamos la bandera de telemetría continua
-    // para no asfixiar el bucle de espera de la UART.
-    if (transmitiendo_intervalo == 0)
-    {
-        enc_count_copy_from_ISR = enc_count;
-        isr_flag.send_recorrido_actual = 1;
-    }
-
-    if (1)//(mainflag.control_recorrido == 1)
-    {
-        // División entera pura
-        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
-        int32_t nuevo_intervalo_aceptado;
-        
-        // Variable estática para recordar en qué bloque exacto se hizo el último reporte USB
-        static int32_t bloque_ultimo_reporte = 0; 
-
-        
-         // Variable estática para detectar si el motor cambió drásticamente de bloque
-        static int32_t max_bloque_alcanzado = 0;
-
-        // 1. Identificamos qué marca se cruzó numéricamente
-        if (intervalo_actual != intervalo_actual_last)
-        {
-            if (intervalo_actual > intervalo_actual_last) 
-            {
-                nuevo_intervalo_aceptado = intervalo_actual;//marca detetada
-            } else {
-                nuevo_intervalo_aceptado = intervalo_actual + 1;
-            }
-           
-           int32_t distancia_pulsos_enc_count = enc_count - enc_count_last;
-            if (distancia_pulsos_enc_count < 0) {
-                distancia_pulsos_enc_count = -distancia_pulsos_enc_count;
-            }
-
-            // 3. CONDICIONAL INDESTRUCTIBLE:
-            // Disparamos si la marca numérica es nueva (ej: de 6 a 7)
-            // O si nos alejamos físicamente de la zona de ruido (distancia > MARGEN)
-            // O si el bloque actual es totalmente diferente al bloque donde se reportó (Cruce legítimo por cambio de marcha)
-            
-            // ACTUALIZACIÓN DE HISTÉRESIS COMPUESTA:
-            // Si el bloque actual es diferente al bloque donde nos quedamos atrapados en el Jitter anterior,
-            // significa que la máquina ya viajó físicamente a otro tramo. Forzamos la apertura del filtro.
-            uint8_t cambio_de_tramo_real = (intervalo_actual != max_bloque_alcanzado);
-                                           
-           
-           if (nuevo_intervalo_aceptado != intervalo_actual_copy_from_ISR || 
-                distancia_pulsos_enc_count > MARGEN_HISTERESIS ||
-                cambio_de_tramo_real)
-            {
-                
-                if (mainflag.control_recorrido == 1)
-                {
-                    motor = MOTOR_OFF;
-                    set_motor(motor);
-                    set_led_motor(motor);
-                }
-                
-
-                // Guardamos el reporte y congelamos el estado actual
-                intervalo_actual_copy_from_ISR = nuevo_intervalo_aceptado;
-                enc_count_last = enc_count; 
-                bloque_ultimo_reporte = intervalo_actual; // Registramos el bloque del disparo
-                max_bloque_alcanzado = intervalo_actual; // Congelamos el bloque del reporte exitoso
-                intervalo_actual_last = intervalo_actual;
-            
-                mainflag.usb_send_intervalo_completo = 1;
-                
-                                
-                //Si se dispara un intervalo nuevo, forzamos la telemetría para que el main lo atienda
-                enc_count_copy_from_ISR = enc_count;
-                isr_flag.send_recorrido_actual = 1; 
-
-            }
-            else
-            {
-                // Es un rebote de un pulso en la frontera, actualizamos tracking silenciosamente
-                intervalo_actual_last = intervalo_actual;
-            }
-        }
-        else
-        {
-            // Mientras nos movamos dentro del mismo bloque (ej: de 6.01m a 6.80m),
-            // actualizamos constantemente el tramo alcanzado para romper el bloqueo de reversa
-            max_bloque_alcanzado = intervalo_actual; 
-        }
-    }
-}
-*/
