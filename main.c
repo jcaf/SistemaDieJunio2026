@@ -143,7 +143,8 @@ void set_execution(int execution)
 		motor = MOTOR_ON;
 		set_motor(motor);
 		set_led_motor(motor);
-		//control_recorrido = 1;//Ahora el control se activa desde que se presiona el boton ACEPTAR en el software.
+		
+                control_recorrido = 1;
 
 		usb_send_execution = 1;
 	}
@@ -152,8 +153,6 @@ void set_execution(int execution)
 		motor = MOTOR_OFF;
 		set_motor(motor);//espera a la orden de inicio
 		set_led_motor(motor);
-		//control_recorrido = 0;
-		//usb_send_motor = 1;
 
 		usb_send_execution = 1;
 	}
@@ -644,7 +643,7 @@ ISR(PCINT2_vect)
     if (transmitiendo_intervalo == 0)
     {
         enc_count_copy_from_ISR = enc_count;
-        isr_flag.send_recorrido_actual = 1;
+        send_recorrido_actual = 1;
     }
 
     // 3. Lógica de control de intervalos por bloques enteros

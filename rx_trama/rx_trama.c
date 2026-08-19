@@ -106,6 +106,7 @@ void USB_commands(char USB_DATACODE, char *USB_payload_char)
 		case USB_DATACODE_SET_MOTOR:
 			motor = atoi(USB_payload_char);
 			set_motor(motor);
+                        set_led_motor(motor);
 			//
 			indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
 			indicatorTimed_run();
