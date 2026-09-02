@@ -87,6 +87,7 @@ volatile int32_t intervalo_actual_copy_from_ISR;
 volatile int32_t enc_count_copy_from_ISR;
 volatile int32_t intervalo_actual_last;
 volatile int32_t pulsos_por_intervalo;
+volatile uint8_t intervalo_rearmado = 1;
 // Almacena el número de bloque entero (ej: 0, 1, 2, 3) que ya fue procesado
 //volatile int32_t ultimo_bloque_procesado = 0; 
 
@@ -180,9 +181,10 @@ void set_execution(int execution)
 
                 enc_count_last = 0;
                 
-                 transmitiendo_intervalo = 0; // Liberamos el escudo de la UART
+                transmitiendo_intervalo = 0; // Liberamos el escudo de la UART
                 intervalo_actual_last = 0;
-                 
+                intervalo_rearmado = 1;
+                
                 usb_send_intervalo_completo = 0;
                 send_recorrido_actual = 0;
                  // Forzamos un valor absurdo para obligar al ISR a calcular la posición real 
@@ -582,13 +584,22 @@ int main(void)
                         // Los bytes saldrán limpios uno detrás del otro por UDR0.
 
                         USB_send_data_float(USB_DATACODE_SET_RECORRIDO_ACTUAL, recorrido_actual);
-                        USB_send_data_integer(USB_DATACODE_INTERVALO_COMPLETO, 0);
+                        
+                        // El intervalo 0 representa el origen.
+                        // Se actualiza la posición en PC, pero NO se informa como un punto de medición alcanzado.
+                        //la PC queda protegida de interpretar el origen como una fila/punto nuevo.
+                        if (intervalo_actual_copia > 0)// (recorrido_actual>0) "No reportar el intervalo cero."
+                        {
+                            USB_send_data_integer(USB_DATACODE_INTERVALO_COMPLETO, 0);
+                            
+                            indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
+                            indicatorTimed_run();
+                        }
 
                         // Liberamos el escudo
                         transmitiendo_intervalo = 0;
 
-                        indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
-                        indicatorTimed_run();
+                        
                     }
                     // Línea eliminada de aquí afuera para evitar la carrera de firmware
                 }
@@ -621,41 +632,66 @@ ISR(TIMER0_COMPA_vect)
 //Este ISR es por cambio de nivel
 
 /*
- * Condición Izquierda: marca_detectada != intervalo_actual_copy_from_ISRQué hace: Verifica si la marca numérica que el encoder acaba de tocar es una marca totalmente nueva para el sistema (por ejemplo, pasar de la marca 6 a la marca 7).Para qué sirve: Es el filtro principal cuando el motor avanza en línea recta. Mientras vayas hacia adelante descubriendo nuevos intervalos (1, 2, 3, 4...), esta condición siempre dará Verdadero y permitirá guardar el dato y avisar a la PC.Condición Derecha: direccion_actual != ultima_direccionQué hace: Verifica si el sentido en el que se cruzó la última frontera del bloque entero es diferente al sentido del cruce inmediatamente anterior (por ejemplo, si el último cruce fue subiendo 1 y el nuevo cruce es bajando -1).Para qué sirve: Es la llave de paso que rompe el bloqueo del filtro cuando hay un cambio de sentido real tras un recorrido largo. Al dar Verdadero, le dice al sistema: "Oye, sé que la marca matemática da el mismo número (ej: 7), pero la dirección cambió, lo que significa que el motor regresó a este punto de forma voluntaria".
- */
+ 
+ * Acabo de reportar una frontera
+        ?
+intervalo_rearmado = 0
+        ?
+1 pulso de distancia ? sigue bloqueado
+2 pulsos             ? sigue bloqueado
+3 pulsos             ? sigue bloqueado
+4 pulsos             ? sigue bloqueado
+5 pulsos             ? REARMADO
+ *  */
 
 // Ajusta este valor según qué tanto vibre tu máquina físicamente
 
 
 
-#define MARGEN_HISTERESIS 4 // 4 pulsos de zona muerta (ideal para filtrar ruido eléctrico)
+#define MARGEN_HISTERESIS 14 // 4 pulsos de zona muerta (ideal para filtrar ruido eléctrico)
 
 ISR(PCINT2_vect)
 {
     volatile static int8_t lookup_table[] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
 
-    // 1. Lectura del encoder por cuadratura x4 (operación atómica nativa)
+    // -----------------------------------------
+    // 1. Decodificación cuadratura x4 (operación atómica nativa)
+    // -----------------------------------------
     enc_val = enc_val << 2;
     enc_val = enc_val | ((PIND & 0b00001100) >> 2);
     enc_count = enc_count + lookup_table[enc_val & 0b00001111];
     
-    // 2. Control de telemetría continua (Se congela si el main está transmitiendo un intervalo)
+    // -----------------------------------------
+    // 2. Telemetría continua(Se congela si el main está transmitiendo un intervalo)
+    // -----------------------------------------
     if (transmitiendo_intervalo == 0)
     {
         enc_count_copy_from_ISR = enc_count;
         send_recorrido_actual = 1;
     }
 
-    // 3. Lógica de control de intervalos por bloques enteros
+    // -----------------------------------------
+    // 3. Rearme de la histéresis
+    // -----------------------------------------
+    if (intervalo_rearmado == 0)
+    {
+        int32_t delta = enc_count - enc_count_last;
+
+        if ((delta > MARGEN_HISTERESIS) || (delta < -MARGEN_HISTERESIS))
+        {
+            intervalo_rearmado = 1;
+        }
+    }
+    
+    // -----------------------------------------
+    // 4. Detección de fronteras: Lógica de control de intervalos por bloques enteros
+    // -----------------------------------------
     if (1) // (control_recorrido == 1)
     {
-        // División entera de 32 bits ultra rápida
-        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;
-        int32_t nuevo_intervalo_aceptado;
+        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;//zona donde estoy
         
-        // Variable estática para recordar el sentido del ÚLTIMO disparo enviado por USB
-        // 1 = Subida (positivo), -1 = Bajada (negativo)
-        static int8_t direccion_ultimo_reporte = 0; 
+        int32_t nuevo_intervalo_aceptado;//frontera que acabo de cruzar
+        
 
         // Evaluamos si el encoder cruzó físicamente la frontera matemática de un bloque
         if (intervalo_actual != intervalo_actual_last)
@@ -663,52 +699,59 @@ ISR(PCINT2_vect)
             // Determinamos la dirección del cruce actual y asignamos la marca teórica exacta
             int8_t direccion_actual = (intervalo_actual > intervalo_actual_last) ? 1 : -1;
             
+            // Determinar la marca física cruzada
             if (direccion_actual == 1) 
             {
+                //frontera que acabo de cruzar
                 nuevo_intervalo_aceptado = intervalo_actual;      // Avance (Subida)
-            } else {
-                nuevo_intervalo_aceptado = intervalo_actual + 1;  // Reversa (Bajada)
+            }
+            else 
+            {
+                //frontera que acabo de cruzar
+                nuevo_intervalo_aceptado = intervalo_actual + 1;  // Reversa (Bajada) //2
+                // es +1, porque si ha cruzado de 2->1, me tiene que decir que estoy en 2, no en 1
             }
            
-            // Calculamos la distancia física pura respecto al pulso del último reporte válido
-            int32_t distancia_pulsos_enc_count = enc_count - enc_count_last;
-            if (distancia_pulsos_enc_count < 0) 
-            {
-                distancia_pulsos_enc_count = -distancia_pulsos_enc_count;
-            }
-
-            // EL FILTRO INDUSTRIAL DE TRES NIVELES:
-            // Nivel 1: Si descubrimos una marca numérica que nunca hemos enviado -> Dispara (Avance limpio).
-            // Nivel 2: Si es la misma marca pero te mueves en la misma dirección -> Exige distancia > 4 (Mata el Jitter continuo).
-            // Nivel 3: Si es la misma marca pero cambiaste de dirección -> Dispara sin importar la distancia (Captura el retorno gracias a tus 10 pulsos de inercia).
-            if (nuevo_intervalo_aceptado != intervalo_actual_copy_from_ISR || 
-               (direccion_actual == direccion_ultimo_reporte && distancia_pulsos_enc_count > MARGEN_HISTERESIS) ||
-               (direccion_actual != direccion_ultimo_reporte))
+            // ---------------------------------
+            // FILTRO DE HISTÉRESIS
+            // ---------------------------------
+            if (intervalo_rearmado)
             {
                 if (control_recorrido == 1)
                 {
                     motor = MOTOR_OFF;
+
                     set_motor(motor);
                     set_led_motor(motor);
                 }
 
-                // Congelamos el estado actual en la memoria del chip
+
+                // Guardar la marca aceptada
                 intervalo_actual_copy_from_ISR = nuevo_intervalo_aceptado;
-                enc_count_last = enc_count; 
-                direccion_ultimo_reporte = direccion_actual; // Registramos el sentido del disparo exitoso
+                // Guardar el pulso exacto del disparo.   // A partir de aquí empieza la zona muerta.
+                enc_count_last = enc_count;
+                // Actualizar bloque matemático
                 intervalo_actual_last = intervalo_actual;
-            
-                // Levantamos la bandera para el reporte seguro en el main()
+
+
+                // Bloquear nuevos disparos hasta       alejarnos más de MARGEN_HISTERESIS.
+                intervalo_rearmado = 0;
+
+
+                // Solicitar reporte al main
                 usb_send_intervalo_completo = 1;
-                
-                // Forzamos la actualización inmediata de la telemetría con los datos del pulso del corte
                 enc_count_copy_from_ISR = enc_count;
-                send_recorrido_actual = 1; 
+                send_recorrido_actual = 1;
             }
             else
             {
-                // Es un rebote de un pulso por Jitter en la misma dirección.
-                // Sincronizamos la frontera de forma silenciosa sin perturbar el USB.
+                /*
+                 * Cruzamos nuevamente la frontera,
+                 * pero todavía estamos dentro de la
+                 * zona de histéresis.
+                 *
+                 * Es jitter: NO informar al PC.
+                 */
                 intervalo_actual_last = intervalo_actual;
             }
         }

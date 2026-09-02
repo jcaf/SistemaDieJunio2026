@@ -18,7 +18,7 @@
 #include "../indicator/indicator.h"
 #include <avr/eeprom.h>
 #include "../usart/usart.h"
-
+#include <util/atomic.h>
 
 #define RX_CSTR_SIZE 32
 
@@ -48,38 +48,45 @@ void USB_commands(char USB_DATACODE, char *USB_payload_char)
 	{
 		//setters
 		case USB_DATACODE_SET_RECORRIDO_TOTAL:
+                {
+                    float recorrido_total_tmp = strtof(USB_payload_char, &endPtr);
 
-			//recorrido_total = atof(USB_payload_char);
-			recorrido_total = strtod(USB_payload_char, &endPtr);
-			if (*endPtr == '\0')
-			{
-				USB_send_data_float(USB_DATACODE_SET_RECORRIDO_TOTAL, recorrido_total);
-				//
-				indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
-				indicatorTimed_run();
-				//
-				//PinTo1(PORTWxLED1,PINxLED1);
-			}
+                    if ((*endPtr == '\0') && (recorrido_total_tmp > 0.0f))
+                    {
+                        recorrido_total = recorrido_total_tmp;
 
-		break;
+                        USB_send_data_float(USB_DATACODE_SET_RECORRIDO_TOTAL,recorrido_total);
+
+                        indicatorTimed_setKSysTickTime_ms(75 / SYSTICK_MS);
+
+                        indicatorTimed_run();
+                    }
+
+                    break;
+                }
 
 		case USB_DATACODE_SET_INTERVALO:
-			//intervalo = atof(USB_payload_char);
-			cli();
-			intervalo = strtod(USB_payload_char, &endPtr);
-                        
-                        pulsos_por_intervalo = intervalo / ENCODER_KRESOL;
-			sei();
-			if (*endPtr == '\0')
-			{
-				USB_send_data_float(USB_DATACODE_SET_INTERVALO, intervalo);
-				//
-				indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
-				indicatorTimed_run();
-				//
-				//PinTo1(PORTWxLED2,PINxLED2);
-			}
-		 break;
+                {
+                    float intervalo_tmp = strtof(USB_payload_char, &endPtr);
+
+                    if ( (*endPtr == '\0') && (intervalo_tmp > 0.0f)  && (ENCODER_KRESOL > 0.0f ) )
+                    {
+                        int32_t pulsos_tmp = (int32_t)(intervalo_tmp / ENCODER_KRESOL);
+
+                        if (pulsos_tmp > 0)
+                        {
+                            ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+                            {
+                                intervalo = intervalo_tmp;
+                                pulsos_por_intervalo = pulsos_tmp;
+                            }
+                            USB_send_data_float(USB_DATACODE_SET_INTERVALO,intervalo);
+                            indicatorTimed_setKSysTickTime_ms(75 / SYSTICK_MS);
+                            indicatorTimed_run();
+                        }
+                    }
+                    break;
+                }
 
 		case USB_DATACODE_SET_SELECTOR:
 			selector = atoi(USB_payload_char);
@@ -125,24 +132,35 @@ void USB_commands(char USB_DATACODE, char *USB_payload_char)
 		break;
 
 		case USB_DATACODE_SET_ENCODER_PPR:
-			encoder_PPR = atoi(USB_payload_char);
-			eeprom_update_word(&EEMEM_encoder_PPR, encoder_PPR );
+                {
+			int encoder_PPR_tmp = atoi(USB_payload_char);
+                        if (encoder_PPR_tmp > 0)
+                        {
+                            encoder_PPR = encoder_PPR_tmp;
+                            
+                            eeprom_update_word(&EEMEM_encoder_PPR, encoder_PPR );
 
-			USB_send_data_integer(USB_DATACODE_SET_ENCODER_PPR, eeprom_read_word(&EEMEM_encoder_PPR));
-			//
-			indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
-			indicatorTimed_run();
-			//
-			//bug fixed 16/9/2025
-			ENCODER_KRESOL = (longitudArcoPorResolucion/1000.0f)/(encoder_PPR * ENCODE_QUADRATURE);//una kte en metros/(PPR*4)
-			set_execution(RESET);
-		break;
-
+                            USB_send_data_integer(USB_DATACODE_SET_ENCODER_PPR, eeprom_read_word(&EEMEM_encoder_PPR));
+                            //
+                            indicatorTimed_setKSysTickTime_ms(75/SYSTICK_MS);
+                            indicatorTimed_run();
+                            //
+                            //bug fixed 16/9/2025
+                            ENCODER_KRESOL = (longitudArcoPorResolucion/1000.0f)/(encoder_PPR * ENCODE_QUADRATURE);//una kte en metros/(PPR*4)
+                            set_execution(RESET);
+                           
+                        }
+			
+		
+                    break;
+                }
 		case USB_DATACODE_SET_LONGITUD_ARCO:
-			//longitudArcoPorResolucion =  atof(USB_payload_char);
-			longitudArcoPorResolucion =  strtod(USB_payload_char,&endPtr);
-			if (*endPtr == '\0')
+                {
+			float longitudArcoPorResolucion_tmp =  strtod(USB_payload_char,&endPtr);
+			if ( (*endPtr == '\0') && (longitudArcoPorResolucion_tmp > 0.0f) )
 			{
+                                longitudArcoPorResolucion = longitudArcoPorResolucion_tmp;
+                                //
 				eeprom_update_float(&EEMEM_longitudArcoPorResolucion, longitudArcoPorResolucion);
 
 				USB_send_data_float(USB_DATACODE_SET_LONGITUD_ARCO, eeprom_read_float(&EEMEM_longitudArcoPorResolucion));
@@ -154,9 +172,9 @@ void USB_commands(char USB_DATACODE, char *USB_payload_char)
 				ENCODER_KRESOL = (longitudArcoPorResolucion/1000.0f)/(encoder_PPR * ENCODE_QUADRATURE);//una kte en metros/(PPR*4)
 				set_execution(RESET);
 			}
-
-		break;
-
+                
+                    break;
+                }
 		case USB_DATACODE_CONTROL_ACTIVATED:
 			control_recorrido = 1;
 
