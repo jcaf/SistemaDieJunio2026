@@ -20,7 +20,7 @@
 #include "../usart/usart.h"
 #include <util/atomic.h>
 
-static void recalcular_encoder(void);
+
 
 #define RX_CSTR_SIZE 32
 
@@ -390,40 +390,7 @@ void rx_trama(void)
 
 	}
 }
-static void recalcular_encoder(void)
-{
-    // Todas las variables necesarias deben ser válidas.
-    if ((encoder_PPR <= 0) ||
-        (longitudArcoPorResolucion <= 0.0f) ||
-        (intervalo <= 0.0f))
-    {
-        return;
-    }
 
-    // Calcular primero sin modificar las variables globales.
-    float nuevo_kresol =
-        (longitudArcoPorResolucion / 1000.0f) /
-        ((float)encoder_PPR * ENCODE_QUADRATURE);
-
-    if (nuevo_kresol <= 0.0f)
-    {
-        return;
-    }
-
-    int32_t nuevos_pulsos = (int32_t)(intervalo / nuevo_kresol);
-
-    if (nuevos_pulsos <= 0)
-    {
-        return;
-    }
-
-    // Sólo cuando TODO es válido publicamos los nuevos valores.
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-    {
-        ENCODER_KRESOL = nuevo_kresol;
-        pulsos_por_intervalo = nuevos_pulsos;
-    }
-}
 /*
 
 #include "rx_trama.h"

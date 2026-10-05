@@ -378,8 +378,8 @@ int main(void)
 
 	longitudArcoPorResolucion = eeprom_read_float( &EEMEM_longitudArcoPorResolucion);//longitud de arco se almacena en milimetros
 	encoder_PPR = eeprom_read_word(&EEMEM_encoder_PPR);//
-	ENCODER_KRESOL = (longitudArcoPorResolucion/1000.0f)/(encoder_PPR * ENCODE_QUADRATURE);//una kte en metros/(PPR*4)
-
+	//ENCODER_KRESOL = (longitudArcoPorResolucion/1000.0f)/(encoder_PPR * ENCODE_QUADRATURE);//una kte en metros/(PPR*4)
+        recalcular_encoder();
         
 
 	//With prescaler 64, gets 1 ms exact (OCR0=249) @16mhz
@@ -689,72 +689,99 @@ ISR(PCINT2_vect)
     // -----------------------------------------
     if (1) // (control_recorrido == 1)
     {
-        int32_t intervalo_actual = enc_count / pulsos_por_intervalo;//zona donde estoy
-        
-        int32_t nuevo_intervalo_aceptado;//frontera que acabo de cruzar
-        
-
-        // Evaluamos si el encoder cruzó físicamente la frontera matemática de un bloque
-        if (intervalo_actual != intervalo_actual_last)
+        if (pulsos_por_intervalo > 0)
         {
-            // Determinamos la dirección del cruce actual y asignamos la marca teórica exacta
-            int8_t direccion_actual = (intervalo_actual > intervalo_actual_last) ? 1 : -1;
-            
-            // Determinar la marca física cruzada
-            if (direccion_actual == 1) 
-            {
-                //frontera que acabo de cruzar
-                nuevo_intervalo_aceptado = intervalo_actual;      // Avance (Subida)
-            }
-            else 
-            {
-                //frontera que acabo de cruzar
-                nuevo_intervalo_aceptado = intervalo_actual + 1;  // Reversa (Bajada) //2
-                // es +1, porque si ha cruzado de 2->1, me tiene que decir que estoy en 2, no en 1
-            }
-           
-            // ---------------------------------
-            // FILTRO DE HISTÉRESIS
-            // ---------------------------------
-            if (intervalo_rearmado)
-            {
-                if (control_recorrido == 1)
-                {
-                    motor = MOTOR_OFF;
 
-                    set_motor(motor);
-                    set_led_motor(motor);
+            int32_t intervalo_actual = enc_count / pulsos_por_intervalo;//zona donde estoy
+
+            int32_t nuevo_intervalo_aceptado;//frontera que acabo de cruzar
+
+
+            // Evaluamos si el encoder cruzó físicamente la frontera matemática de un bloque
+            if (intervalo_actual != intervalo_actual_last)
+            {
+                // Determinamos la dirección del cruce actual y asignamos la marca teórica exacta
+                int8_t direccion_actual = (intervalo_actual > intervalo_actual_last) ? 1 : -1;
+
+                // Determinar la marca física cruzada
+                if (direccion_actual == 1) 
+                {
+                    //frontera que acabo de cruzar
+                    nuevo_intervalo_aceptado = intervalo_actual;      // Avance (Subida)
+                }
+                else 
+                {
+                    //frontera que acabo de cruzar
+                    nuevo_intervalo_aceptado = intervalo_actual + 1;  // Reversa (Bajada) //2
+                    // es +1, porque si ha cruzado de 2->1, me tiene que decir que estoy en 2, no en 1
                 }
 
+                // ---------------------------------
+                // FILTRO DE HISTÉRESIS
+                // ---------------------------------
+                if (intervalo_rearmado)
+                {
+                    if (control_recorrido == 1)
+                    {
+                        motor = MOTOR_OFF;
 
-                // Guardar la marca aceptada
-                intervalo_actual_copy_from_ISR = nuevo_intervalo_aceptado;
-                // Guardar el pulso exacto del disparo.   // A partir de aquí empieza la zona muerta.
-                enc_count_last = enc_count;
-                // Actualizar bloque matemático
-                intervalo_actual_last = intervalo_actual;
+                        set_motor(motor);
+                        set_led_motor(motor);
+                    }
 
 
-                // Bloquear nuevos disparos hasta       alejarnos más de MARGEN_HISTERESIS.
-                intervalo_rearmado = 0;
+                    // Guardar la marca aceptada
+                    intervalo_actual_copy_from_ISR = nuevo_intervalo_aceptado;
+                    // Guardar el pulso exacto del disparo.   // A partir de aquí empieza la zona muerta.
+                    enc_count_last = enc_count;
+                    // Actualizar bloque matemático
+                    intervalo_actual_last = intervalo_actual;
 
 
-                // Solicitar reporte al main
-                usb_send_intervalo_completo = 1;
-                enc_count_copy_from_ISR = enc_count;
-                send_recorrido_actual = 1;
-            }
-            else
-            {
-                /*
-                 * Cruzamos nuevamente la frontera,
-                 * pero todavía estamos dentro de la
-                 * zona de histéresis.
-                 *
-                 * Es jitter: NO informar al PC.
-                 */
-                intervalo_actual_last = intervalo_actual;
+                    // Bloquear nuevos disparos hasta       alejarnos más de MARGEN_HISTERESIS.
+                    intervalo_rearmado = 0;
+
+
+                    // Solicitar reporte al main
+                    usb_send_intervalo_completo = 1;
+                    enc_count_copy_from_ISR = enc_count;
+                    send_recorrido_actual = 1;
+                }
+                else
+                {
+                    /*
+                     * Cruzamos nuevamente la frontera,
+                     * pero todavía estamos dentro de la
+                     * zona de histéresis.
+                     *
+                     * Es jitter: NO informar al PC.
+                     */
+                    intervalo_actual_last = intervalo_actual;
+                }
             }
         }
+    }
+}
+
+
+void recalcular_encoder(void)
+{
+    float nuevo_kresol =(longitudArcoPorResolucion / 1000.0f) / ((float)encoder_PPR * ENCODE_QUADRATURE);
+    
+    int32_t nuevos_pulsos = 0;
+    
+    if (intervalo > 0.0f)
+    {
+        nuevos_pulsos = (int32_t)(intervalo / nuevo_kresol);
+
+        if (nuevos_pulsos <= 0)
+        {
+            nuevos_pulsos = 0;
+        }
+    }
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    {
+        ENCODER_KRESOL = nuevo_kresol;
+        pulsos_por_intervalo = nuevos_pulsos;
     }
 }

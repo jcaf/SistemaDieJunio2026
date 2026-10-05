@@ -194,6 +194,6 @@ extern float EEMEM EEMEM_longitudArcoPorResolucion;
 
 void USB_send_data_float(char datacode, float payload0);
 void USB_send_data_integer(char datacode, int payload0);
-
+void recalcular_encoder(void);
 
 #endif /* MAIN_H_ */
