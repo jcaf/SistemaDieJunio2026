@@ -1,5 +1,5 @@
-/* SISTEMA DIE 2026
- * RTM 3/09/2026 para entregar a Wilfredo
+/* SISTEMA DIE 2026 
+ * RTM 05/10/2026 para entregar a Wilfredo
  * main.c
  *
  *  Created on: 20 dic. 2024
