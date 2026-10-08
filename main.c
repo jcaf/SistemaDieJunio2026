@@ -292,8 +292,8 @@ void set_selector(int selector)
 		//RLY1 - RLY3
 		PinTo1(PORTWxRELAY1,PINxRELAY1);//1
 		PinTo1(PORTWxRELAY2,PINxRELAY2);//2
-		PinTo0(PORTWxRELAY3,PINxRELAY3);//4
-		PinTo1(PORTWxRELAY4,PINxRELAY4);//3
+		PinTo1(PORTWxRELAY3,PINxRELAY3);//4
+		PinTo0(PORTWxRELAY4,PINxRELAY4);//3
 	}
 	else if (selector == SELECTOR_L)
 	{
